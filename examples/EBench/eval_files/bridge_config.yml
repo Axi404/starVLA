@@ -55,10 +55,12 @@ max_chunk_len: null
 # load any norm stats. It forwards the canonical fake action produced by
 # upstream `genmanip_client.eval_client.fake_action` for EBench's fixed
 # r5a + lift2 + joint_position setup — i.e. `gmp eval -a r5a -g lift2`.
-fake_mode: false
+fake_mode: true
 fake_chunk_len: 50     # passed as `chunk_size` to upstream fake_action
 
 # ---- misc ----
 image_size: [224, 224]
 max_episodes: null     # null = run until EBench says done
+max_steps: null        # null = no step cap; set e.g. 3 to smoke-test the pipeline
 log_every: 10          # print a step log every N inference calls
+debug: true            # on step 1, dump full obs/example/chunk/payload structures

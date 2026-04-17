@@ -36,6 +36,42 @@ logger = logging.getLogger("ebench_bridge")
 
 
 # --------------------------------------------------------------------------- #
+# debug helpers
+# --------------------------------------------------------------------------- #
+def _describe(obj: Any, name: str = "obj", indent: int = 0, max_depth: int = 6) -> str:
+    """Compact, structural dump of an arbitrary obj (dicts / lists / ndarrays).
+    Used to eyeball-diff fake vs real payloads and catch malformed obs early."""
+    pad = "  " * indent
+    if indent > max_depth:
+        return f"{pad}{name}: <max depth>"
+    if isinstance(obj, np.ndarray):
+        extra = ""
+        if obj.size > 0 and np.issubdtype(obj.dtype, np.number):
+            extra = f" min={obj.min():.4f} max={obj.max():.4f} mean={obj.mean():.4f}"
+        return f"{pad}{name}: ndarray shape={tuple(obj.shape)} dtype={obj.dtype}{extra}"
+    if isinstance(obj, dict):
+        lines = [f"{pad}{name}: dict(len={len(obj)})"]
+        for k, v in obj.items():
+            lines.append(_describe(v, repr(k), indent + 1, max_depth))
+        return "\n".join(lines)
+    if isinstance(obj, (list, tuple)):
+        kind = type(obj).__name__
+        lines = [f"{pad}{name}: {kind}(len={len(obj)})"]
+        # Only show first element unless the list is short, to keep chunks readable.
+        to_show = list(range(min(2, len(obj))))
+        if len(obj) > 3:
+            to_show.append(len(obj) - 1)
+        for i in to_show:
+            lines.append(_describe(obj[i], f"[{i}]", indent + 1, max_depth))
+        if len(obj) > 3:
+            lines.insert(2, f"{pad}  ... ({len(obj) - 3} more)")
+        return "\n".join(lines)
+    if isinstance(obj, (int, float, bool, str)) or obj is None:
+        return f"{pad}{name}: {type(obj).__name__}={obj!r}"
+    return f"{pad}{name}: {type(obj).__name__}"
+
+
+# --------------------------------------------------------------------------- #
 # norm stats helpers
 # --------------------------------------------------------------------------- #
 def _load_action_norm_stats(policy_ckpt_path: str, unnorm_key: str) -> Dict[str, np.ndarray]:
@@ -125,6 +161,8 @@ class EBenchBridge:
         self.norm_mode: str = cfg.get("action_normalization_mode", "min_max")
         self.fake_mode: bool = cfg.get("fake_mode", False)
         self.fake_chunk_len: int = cfg.get("fake_chunk_len", 50)
+        self.debug: bool = cfg.get("debug", True)
+        self.max_steps: Optional[int] = cfg.get("max_steps")
 
         # --- StarVLA client (skipped in fake mode) ---
         if self.fake_mode:
@@ -258,21 +296,53 @@ class EBenchBridge:
             raise KeyError(
                 f"worker_id '{self.worker_id}' not in EBench obs; got {list(obs.keys())}"
             )
+        worker_obs = obs[self.worker_id]["obs"]
+        first_step = self._step_counter == 0
+        dump = self.debug and first_step
+
+        if dump:
+            logger.info(
+                "=== [debug] EBench → bridge: obs (worker=%s) ===\n%s",
+                self.worker_id, _describe(worker_obs, "obs"),
+            )
+
         t0 = time.time()
         if self.fake_mode:
             payload = self._fake_payload()
             n_actions = self.fake_chunk_len if self.chunk_mode else 1
         else:
-            worker_obs = obs[self.worker_id]["obs"]
             example = self._obs_to_example(worker_obs)
+            if dump:
+                logger.info(
+                    "=== [debug] bridge → StarVLA: example ===\n%s",
+                    _describe(example, "example"),
+                )
             chunk = self._predict_chunk(example)
+            if dump:
+                logger.info(
+                    "=== [debug] StarVLA → bridge: unnormalized chunk ===\n%s",
+                    _describe(chunk, "chunk"),
+                )
+                for slice_name, (a, b) in self.layout.items():
+                    s = chunk[:, a:b]
+                    logger.info(
+                        "   slice %-14s [%2d:%2d]: min=%.4f max=%.4f mean=%.4f",
+                        slice_name, a, b, s.min(), s.max(), s.mean(),
+                    )
             actions = self._chunk_to_ebench(chunk)
             payload = {self.worker_id: actions if self.chunk_mode else actions[0]}
             n_actions = len(actions) if self.chunk_mode else 1
         elapsed = time.time() - t0
 
+        if dump:
+            logger.info(
+                "=== [debug] bridge → EBench: payload (mode=%s) ===\n%s",
+                "fake" if self.fake_mode else "real",
+                _describe(payload, "payload"),
+            )
+
         self._step_counter += 1
-        if self._step_counter % self.log_every == 0:
+        if self._step_counter % self.log_every == 0 or dump:
             logger.info(
                 "step %d: %d actions, inference=%.3fs",
                 self._step_counter, n_actions, elapsed,
@@ -288,11 +358,9 @@ class EBenchBridge:
             while not done:
                 action = self._one_inference(obs)
                 obs, done = self.eval_client.step(action)
-                if not self.chunk_mode:
-                    # non-chunk mode: keep feeding single actions from the same chunk
-                    # until done or until we re-query the model. Here we re-query every step
-                    # so this branch is effectively single-step inference.
-                    pass
+                if self.max_steps is not None and self._step_counter >= self.max_steps:
+                    logger.info("max_steps=%d reached, stopping", self.max_steps)
+                    break
         finally:
             self.close()
 
