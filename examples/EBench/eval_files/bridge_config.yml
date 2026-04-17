@@ -36,9 +36,12 @@ action_layout:
   base_delta:   [16, 19]    # 3 dims (dx, dy, dyaw)
 
 # ---- EBench action dict fields ----
+# `base_motion` is already defined as a delta on the server side, so no
+# `base_is_rel` field is needed (grep in genmanip_client confirms it is never
+# read). `is_rel` applies to arm joints: our model outputs absolute targets,
+# so it stays False.
 control_type: "joint_position"   # "joint_position" or "ee_pose"; we train on joint positions
 is_rel: false                    # absolute joint target
-base_is_rel: true                # base_motion is a delta (matches action.base_delta)
 
 # ---- chunk mode ----
 # If true, submit the entire predicted chunk in one EvalClient.step(); EBench executes it internally.
@@ -49,12 +52,15 @@ max_chunk_len: null
 
 # ---- fake / dry-run mode ----
 # When true the bridge does NOT connect to the StarVLA server and does NOT
-# load any norm stats. Instead it synthesises a 19-dim "hold current pose"
-# chunk from the EBench obs (arms/grippers echo the current state, base
-# delta = 0). Use this to sanity-check the EBench end of the bridge before
-# booting the real policy server.
+# load any norm stats. It forwards the *canonical* fake action produced by
+# upstream `genmanip_client.eval_client.fake_action`, i.e. exactly what
+# `gmp eval -a <arm> -g <gripper> -c <ctrl>` would submit. Use this to
+# sanity-check the EBench end of the bridge before booting StarVLA.
 fake_mode: false
-fake_chunk_len: 50     # length of the synthetic chunk per step
+fake_arm_type: "r5a"
+fake_gripper_type: "lift2"
+fake_control_type: "joint_position"
+fake_chunk_len: 50     # passed as `chunk_size` to upstream fake_action
 
 # ---- misc ----
 image_size: [224, 224]

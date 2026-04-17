@@ -118,7 +118,6 @@ class EBenchBridge:
         self.layout: Dict[str, List[int]] = cfg["action_layout"]
         self.control_type: str = cfg["control_type"]
         self.is_rel: bool = cfg["is_rel"]
-        self.base_is_rel: bool = cfg["base_is_rel"]
 
         self.chunk_mode: bool = cfg.get("chunk_mode", True)
         self.max_chunk_len: Optional[int] = cfg.get("max_chunk_len")
@@ -126,6 +125,9 @@ class EBenchBridge:
         self.norm_mode: str = cfg.get("action_normalization_mode", "min_max")
         self.fake_mode: bool = cfg.get("fake_mode", False)
         self.fake_chunk_len: int = cfg.get("fake_chunk_len", 50)
+        self.fake_arm_type: str = cfg.get("fake_arm_type", "r5a")
+        self.fake_gripper_type: str = cfg.get("fake_gripper_type", "lift2")
+        self.fake_control_type: str = cfg.get("fake_control_type", "joint_position")
 
         # --- StarVLA client (skipped in fake mode) ---
         if self.fake_mode:
@@ -189,28 +191,20 @@ class EBenchBridge:
         return {"lang": str(instruction), "image": images}
 
     # ------------------------------------------------------------------ #
-    # fake "hold current pose" chunk (no StarVLA call)
+    # fake action (delegates to upstream `fake_action`)
     # ------------------------------------------------------------------ #
-    def _fake_predict_chunk(self, worker_obs: Dict[str, Any]) -> np.ndarray:
-        """Build a (fake_chunk_len, 19) vector where arm/gripper dims echo the
-        current EBench state and base delta is zero — i.e. "don't move".
-        Layout matches EBenchConfig action_keys so the normal re-interleave
-        logic still applies downstream.
-        """
-        joints = np.asarray(worker_obs.get("state.joints"), dtype=np.float32)
-        gripper = np.asarray(worker_obs.get("state.gripper"), dtype=np.float32)
-        if joints.shape != (12,) or gripper.shape != (4,):
-            raise ValueError(
-                f"fake mode expects state.joints=(12,) and state.gripper=(4,); "
-                f"got joints={joints.shape}, gripper={gripper.shape}"
-            )
-        row = np.zeros(19, dtype=np.float32)
-        row[0:6]   = joints[:6]     # left_joints
-        row[6:12]  = joints[6:]     # right_joints
-        row[12:14] = gripper[:2]    # left_gripper
-        row[14:16] = gripper[2:]    # right_gripper
-        # row[16:19] = 0 → zero base delta
-        return np.tile(row, (self.fake_chunk_len, 1))
+    def _fake_payload(self) -> Dict[str, Any]:
+        """Exactly what `gmp eval -a <arm> -g <gripper> -c <ctrl>` would send:
+        a zero-delta `is_rel=True` action (chunked when chunk_mode is on)."""
+        from genmanip_client.eval_client import fake_action
+        chunk_size = self.fake_chunk_len if self.chunk_mode else 1
+        action = fake_action(
+            arm_type=self.fake_arm_type,
+            gripper_type=self.fake_gripper_type,
+            control_type=self.fake_control_type,
+            chunk_size=chunk_size,
+        )
+        return {self.worker_id: action}
 
     # ------------------------------------------------------------------ #
     # StarVLA call
@@ -251,7 +245,6 @@ class EBenchBridge:
             "base_motion": base,
             "control_type": self.control_type,
             "is_rel": self.is_rel,
-            "base_is_rel": self.base_is_rel,
         }
 
     def _chunk_to_ebench(self, chunk: np.ndarray) -> List[Dict[str, Any]]:
@@ -267,27 +260,24 @@ class EBenchBridge:
             raise KeyError(
                 f"worker_id '{self.worker_id}' not in EBench obs; got {list(obs.keys())}"
             )
-        worker_obs = obs[self.worker_id]["obs"]
-
         t0 = time.time()
         if self.fake_mode:
-            chunk = self._fake_predict_chunk(worker_obs)
+            payload = self._fake_payload()
+            n_actions = self.fake_chunk_len if self.chunk_mode else 1
         else:
+            worker_obs = obs[self.worker_id]["obs"]
             example = self._obs_to_example(worker_obs)
             chunk = self._predict_chunk(example)
+            actions = self._chunk_to_ebench(chunk)
+            payload = {self.worker_id: actions if self.chunk_mode else actions[0]}
+            n_actions = len(actions) if self.chunk_mode else 1
         elapsed = time.time() - t0
-
-        actions = self._chunk_to_ebench(chunk)
-        if self.chunk_mode:
-            payload = {self.worker_id: actions}
-        else:
-            payload = {self.worker_id: actions[0]}
 
         self._step_counter += 1
         if self._step_counter % self.log_every == 0:
             logger.info(
                 "step %d: %d actions, inference=%.3fs",
-                self._step_counter, len(actions), elapsed,
+                self._step_counter, n_actions, elapsed,
             )
         return payload
 
