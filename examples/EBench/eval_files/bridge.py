@@ -125,9 +125,6 @@ class EBenchBridge:
         self.norm_mode: str = cfg.get("action_normalization_mode", "min_max")
         self.fake_mode: bool = cfg.get("fake_mode", False)
         self.fake_chunk_len: int = cfg.get("fake_chunk_len", 50)
-        self.fake_arm_type: str = cfg.get("fake_arm_type", "r5a")
-        self.fake_gripper_type: str = cfg.get("fake_gripper_type", "lift2")
-        self.fake_control_type: str = cfg.get("fake_control_type", "joint_position")
 
         # --- StarVLA client (skipped in fake mode) ---
         if self.fake_mode:
@@ -194,14 +191,15 @@ class EBenchBridge:
     # fake action (delegates to upstream `fake_action`)
     # ------------------------------------------------------------------ #
     def _fake_payload(self) -> Dict[str, Any]:
-        """Exactly what `gmp eval -a <arm> -g <gripper> -c <ctrl>` would send:
-        a zero-delta `is_rel=True` action (chunked when chunk_mode is on)."""
+        """Exactly what `gmp eval -a r5a -g lift2 -c joint_position` would
+        send: a zero-delta `is_rel=True` action. EBench is fixed to this
+        robot/gripper/control combo, so nothing here is configurable."""
         from genmanip_client.eval_client import fake_action
         chunk_size = self.fake_chunk_len if self.chunk_mode else 1
         action = fake_action(
-            arm_type=self.fake_arm_type,
-            gripper_type=self.fake_gripper_type,
-            control_type=self.fake_control_type,
+            arm_type="r5a",
+            gripper_type="lift2",
+            control_type="joint_position",
             chunk_size=chunk_size,
         )
         return {self.worker_id: action}

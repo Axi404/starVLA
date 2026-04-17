@@ -97,10 +97,10 @@ To verify the bridge ↔ EBench wiring without booting the StarVLA server,
 set `fake_mode: true` in `bridge_config.yml`. In this mode the bridge:
 
 - Does not connect to `policy_host:policy_port` and does not load norm stats.
-- Calls `genmanip_client.eval_client.fake_action(arm, gripper, ctrl, chunk)`
-  directly — the same helper that backs `gmp eval -a <arm> -g <gripper>
-  -c <ctrl>`. For the default `r5a / lift2 / joint_position`, that's a
-  zero-delta `is_rel=True` action that keeps the robot still.
+- Calls `genmanip_client.eval_client.fake_action` with EBench's fixed
+  `r5a / lift2 / joint_position` combo — the same payload that `gmp eval
+  -a r5a -g lift2` produces. It's a zero-delta `is_rel=True` action that
+  keeps the robot still.
 
 Run just `run_bridge.sh`; you should see steps advancing on the EBench side
 with the robot staying still. Flip back to `fake_mode: false` once the real
