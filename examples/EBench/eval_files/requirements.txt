@@ -1,0 +1,9 @@
+# Bridge-side extras. StarVLA deps are expected to be satisfied by the main env.
+# `genmanip_client` is assumed to be already installed (see EBench docs).
+
+pyyaml
+opencv-python
+numpy
+msgpack
+msgpack-numpy
+websockets

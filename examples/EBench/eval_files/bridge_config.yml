@@ -1,0 +1,53 @@
+# Bridge config: connects StarVLA policy server to an EBench evaluation server.
+# The bridge is a client to both sides; there is no benchmark driver to hand this file to,
+# bridge.py loads it directly.
+
+# ---- StarVLA policy server (same machine by default) ----
+policy_host: "127.0.0.1"
+policy_port: 5694
+policy_ckpt_path: "/path/to/results/Checkpoints/ebench/QwenOFT-ebench/checkpoints/steps_XXXXX_pytorch_model.pt"
+unnorm_key: "new_embodiment"
+# action_normalization_mode: how the non-binary dims of the action were normalized during training.
+#   EBench training uses "min_max" for joints/base and "binary" for gripper (pass-through).
+action_normalization_mode: "min_max"
+
+# ---- EBench evaluation server ----
+ebench_base_url: "http://127.0.0.1:8087"
+ebench_worker_id: "0"
+ebench_run_id: "starvla_ebench_eval"
+
+# ---- cameras ----
+# Training (see starVLA/dataloader/gr00t_lerobot/data_config.py::EBenchConfig)
+# uses these three keys in this order. EBench serves obs with the same keys
+# (its data was produced by EBench itself), so we pass them through unchanged.
+# Image order in this list == order fed into StarVLA.
+camera_keys:
+  - "video.cam_high"
+  - "video.cam_left_wrist"
+  - "video.cam_right_wrist"
+
+# ---- action layout ----
+# Slices inside the model's (action_dim=19) output, following EBenchConfig action_keys order.
+action_layout:
+  left_joints:  [0, 6]      # 6 dims
+  right_joints: [6, 12]     # 6 dims
+  left_gripper: [12, 14]    # 2 dims
+  right_gripper: [14, 16]   # 2 dims
+  base_delta:   [16, 19]    # 3 dims (dx, dy, dyaw)
+
+# ---- EBench action dict fields ----
+control_type: "joint_position"   # "joint_position" or "ee_pose"; we train on joint positions
+is_rel: false                    # absolute joint target
+base_is_rel: true                # base_motion is a delta (matches action.base_delta)
+
+# ---- chunk mode ----
+# If true, submit the entire predicted chunk in one EvalClient.step(); EBench executes it internally.
+# If false, submit single actions (slower, but useful for debugging step-level transitions).
+chunk_mode: true
+# Override chunk length actually sent to EBench. Null = use whatever the model predicts (usually 50).
+max_chunk_len: null
+
+# ---- misc ----
+image_size: [224, 224]
+max_episodes: null     # null = run until EBench says done
+log_every: 10          # print a step log every N inference calls
