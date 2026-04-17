@@ -149,6 +149,7 @@ class EBenchBridge:
     def __init__(self, cfg: Dict[str, Any]) -> None:
         self.cfg = cfg
         self.camera_keys: List[str] = list(cfg["camera_keys"])
+        self._assert_camera_order_matches_training(self.camera_keys)
         self.image_size = tuple(cfg.get("image_size", [224, 224]))
 
         self.layout: Dict[str, List[int]] = cfg["action_layout"]
@@ -205,6 +206,24 @@ class EBenchBridge:
     # ------------------------------------------------------------------ #
     # obs → StarVLA example
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _assert_camera_order_matches_training(keys: List[str]) -> None:
+        """Training (`_pack_sample` in gr00t_lerobot/datasets.py) bucketises
+        images as `prim_images + wrist_views` using the substring "wrist" on
+        the key name. Our bridge forwards `camera_keys` in list order without
+        re-bucketising, so the list must already be prim-first then wrist."""
+        seen_wrist = False
+        for k in keys:
+            is_wrist = "wrist" in k or "left_camera_view" in k or "right_camera_view" in k
+            if is_wrist:
+                seen_wrist = True
+            elif seen_wrist:
+                raise ValueError(
+                    "camera_keys order breaks training convention: a primary "
+                    "(non-wrist) camera appears after a wrist camera. "
+                    f"Got: {keys}. Put prim views (e.g. top_camera_view) first."
+                )
+
     def _resize(self, img: np.ndarray) -> np.ndarray:
         return cv.resize(img, self.image_size, interpolation=cv.INTER_AREA)
 
