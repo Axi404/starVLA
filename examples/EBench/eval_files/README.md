@@ -91,6 +91,20 @@ different view order.
   `ee_pose` only if you train a separate ee-pose model and adjust
   `_action_row_to_ebench` to emit `[pos, quat, gripper]` pairs.
 
+## Fake mode (EBench-only smoke test)
+
+To verify the bridge ↔ EBench wiring without booting the StarVLA server,
+set `fake_mode: true` in `bridge_config.yml`. In this mode the bridge:
+
+- Does not connect to `policy_host:policy_port` and does not load norm stats.
+- Builds a `(fake_chunk_len, 19)` chunk per step that **echoes the current
+  EBench state** (arms + grippers) with a zero base delta — i.e. "hold pose".
+- Re-interleaves and submits it the same way the real path does.
+
+Run just `run_bridge.sh`; you should see steps advancing on the EBench side
+with the robot staying still. Flip back to `fake_mode: false` once the real
+policy server is up.
+
 ## Multi-worker
 
 Currently the bridge handles a single `worker_id`. For parallel evaluation,

@@ -124,19 +124,30 @@ class EBenchBridge:
         self.max_chunk_len: Optional[int] = cfg.get("max_chunk_len")
         self.log_every: int = cfg.get("log_every", 10)
         self.norm_mode: str = cfg.get("action_normalization_mode", "min_max")
+        self.fake_mode: bool = cfg.get("fake_mode", False)
+        self.fake_chunk_len: int = cfg.get("fake_chunk_len", 50)
 
-        # --- StarVLA client ---
-        self.policy = WebsocketClientPolicy(
-            host=cfg["policy_host"], port=cfg["policy_port"]
-        )
-        ckpt_path = cfg["policy_ckpt_path"]
-        self.action_norm_stats = _load_action_norm_stats(ckpt_path, cfg["unnorm_key"])
-        self.model_chunk_len = _get_action_chunk_size(ckpt_path)
-        logger.info(
-            "connected to StarVLA %s:%s (chunk=%d, action_dim=%d)",
-            cfg["policy_host"], cfg["policy_port"],
-            self.model_chunk_len, len(self.action_norm_stats["min"]),
-        )
+        # --- StarVLA client (skipped in fake mode) ---
+        if self.fake_mode:
+            self.policy = None
+            self.action_norm_stats = None
+            self.model_chunk_len = self.fake_chunk_len
+            logger.warning(
+                "FAKE MODE: skipping StarVLA connection. Actions will hold "
+                "current pose with zero base delta. Use to test EBench only."
+            )
+        else:
+            self.policy = WebsocketClientPolicy(
+                host=cfg["policy_host"], port=cfg["policy_port"]
+            )
+            ckpt_path = cfg["policy_ckpt_path"]
+            self.action_norm_stats = _load_action_norm_stats(ckpt_path, cfg["unnorm_key"])
+            self.model_chunk_len = _get_action_chunk_size(ckpt_path)
+            logger.info(
+                "connected to StarVLA %s:%s (chunk=%d, action_dim=%d)",
+                cfg["policy_host"], cfg["policy_port"],
+                self.model_chunk_len, len(self.action_norm_stats["min"]),
+            )
 
         # --- EBench client ---
         from genmanip_client.eval_client import EvalClient  # lazy; only at eval time
@@ -176,6 +187,30 @@ class EBenchBridge:
             self._last_instruction = instruction
 
         return {"lang": str(instruction), "image": images}
+
+    # ------------------------------------------------------------------ #
+    # fake "hold current pose" chunk (no StarVLA call)
+    # ------------------------------------------------------------------ #
+    def _fake_predict_chunk(self, worker_obs: Dict[str, Any]) -> np.ndarray:
+        """Build a (fake_chunk_len, 19) vector where arm/gripper dims echo the
+        current EBench state and base delta is zero — i.e. "don't move".
+        Layout matches EBenchConfig action_keys so the normal re-interleave
+        logic still applies downstream.
+        """
+        joints = np.asarray(worker_obs.get("state.joints"), dtype=np.float32)
+        gripper = np.asarray(worker_obs.get("state.gripper"), dtype=np.float32)
+        if joints.shape != (12,) or gripper.shape != (4,):
+            raise ValueError(
+                f"fake mode expects state.joints=(12,) and state.gripper=(4,); "
+                f"got joints={joints.shape}, gripper={gripper.shape}"
+            )
+        row = np.zeros(19, dtype=np.float32)
+        row[0:6]   = joints[:6]     # left_joints
+        row[6:12]  = joints[6:]     # right_joints
+        row[12:14] = gripper[:2]    # left_gripper
+        row[14:16] = gripper[2:]    # right_gripper
+        # row[16:19] = 0 → zero base delta
+        return np.tile(row, (self.fake_chunk_len, 1))
 
     # ------------------------------------------------------------------ #
     # StarVLA call
@@ -233,10 +268,13 @@ class EBenchBridge:
                 f"worker_id '{self.worker_id}' not in EBench obs; got {list(obs.keys())}"
             )
         worker_obs = obs[self.worker_id]["obs"]
-        example = self._obs_to_example(worker_obs)
 
         t0 = time.time()
-        chunk = self._predict_chunk(example)
+        if self.fake_mode:
+            chunk = self._fake_predict_chunk(worker_obs)
+        else:
+            example = self._obs_to_example(worker_obs)
+            chunk = self._predict_chunk(example)
         elapsed = time.time() - t0
 
         actions = self._chunk_to_ebench(chunk)
@@ -275,10 +313,11 @@ class EBenchBridge:
             self.eval_client.close()
         except Exception:
             logger.exception("EvalClient.close() raised")
-        try:
-            self.policy.close()
-        except Exception:
-            logger.exception("policy.close() raised")
+        if self.policy is not None:
+            try:
+                self.policy.close()
+            except Exception:
+                logger.exception("policy.close() raised")
 
 
 # --------------------------------------------------------------------------- #
