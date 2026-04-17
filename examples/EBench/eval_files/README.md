@@ -48,11 +48,17 @@ plus `base_motion=(3,)`. The bridge re-interleaves per chunk row before
 submitting. Binary gripper dims are trained with `mask=False` and are passed
 through unchanged (the model already emits ~0 / ~1 values).
 
-Cameras (matching training order in `EBenchConfig.video_keys`):
-`video.cam_high`, `video.cam_left_wrist`, `video.cam_right_wrist`.
-EBench serves obs under these same keys, so the bridge passes them through
-as-is. Reorder `camera_keys` in the config only if you intentionally want a
-different view order.
+Training keys vs eval keys differ (names only, content is the same dataset):
+
+| training (`EBenchConfig.video_keys`) | EBench eval obs              |
+|--------------------------------------|------------------------------|
+| `video.cam_high`                     | `video.top_camera_view`      |
+| `video.cam_left_wrist`               | `video.left_camera_view`     |
+| `video.cam_right_wrist`              | `video.right_camera_view`    |
+
+Cross-checked against `InternVLA/tutorials/examples/evaluation/EBench/pi05_client.py`.
+The 4th eval camera `video.overlook_camera_view` is unused. The bridge
+resizes all three to `image_size` before forwarding to StarVLA.
 
 ## Running
 

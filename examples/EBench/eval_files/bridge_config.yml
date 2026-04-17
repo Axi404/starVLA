@@ -17,14 +17,18 @@ ebench_worker_id: "0"
 ebench_run_id: "starvla_ebench_eval"
 
 # ---- cameras ----
-# Training (see starVLA/dataloader/gr00t_lerobot/data_config.py::EBenchConfig)
-# uses these three keys in this order. EBench serves obs with the same keys
-# (its data was produced by EBench itself), so we pass them through unchanged.
-# Image order in this list == order fed into StarVLA.
+# EBench eval-time obs key → training obs key (see EBenchConfig.video_keys):
+#   video.top_camera_view    → cam_high
+#   video.left_camera_view   → cam_left_wrist
+#   video.right_camera_view  → cam_right_wrist
+# (The 4th eval camera `video.overlook_camera_view` is unused.)
+# This matches the canonical InternVLA EBench client:
+#   InternVLA/tutorials/examples/evaluation/EBench/pi05_client.py
+# Order here = order fed into StarVLA; keep it [high, left_wrist, right_wrist].
 camera_keys:
-  - "video.cam_high"
-  - "video.cam_left_wrist"
-  - "video.cam_right_wrist"
+  - "video.top_camera_view"
+  - "video.left_camera_view"
+  - "video.right_camera_view"
 
 # ---- action layout ----
 # Slices inside the model's (action_dim=19) output, following EBenchConfig action_keys order.
