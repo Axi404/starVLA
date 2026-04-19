@@ -39,8 +39,8 @@ logger = logging.getLogger("ebench_bridge")
 # debug helpers
 # --------------------------------------------------------------------------- #
 def _describe(obj: Any, name: str = "obj", indent: int = 0, max_depth: int = 6) -> str:
-    """Compact, structural dump of an arbitrary obj (dicts / lists / ndarrays).
-    Used to eyeball-diff fake vs real payloads and catch malformed obs early."""
+    """Compact, structural dump of an arbitrary obj (dicts / lists / ndarrays),
+    used by the first-step dump to validate obs/example/chunk/payload shapes."""
     pad = "  " * indent
     if indent > max_depth:
         return f"{pad}{name}: <max depth>"
@@ -160,32 +160,21 @@ class EBenchBridge:
         self.max_chunk_len: Optional[int] = cfg.get("max_chunk_len")
         self.log_every: int = cfg.get("log_every", 10)
         self.norm_mode: str = cfg.get("action_normalization_mode", "min_max")
-        self.fake_mode: bool = cfg.get("fake_mode", False)
-        self.fake_chunk_len: int = cfg.get("fake_chunk_len", 50)
         self.debug: bool = cfg.get("debug", True)
         self.max_steps: Optional[int] = cfg.get("max_steps")
 
-        # --- StarVLA client (skipped in fake mode) ---
-        if self.fake_mode:
-            self.policy = None
-            self.action_norm_stats = None
-            self.model_chunk_len = self.fake_chunk_len
-            logger.warning(
-                "FAKE MODE: skipping StarVLA connection. Actions will hold "
-                "current pose with zero base delta. Use to test EBench only."
-            )
-        else:
-            self.policy = WebsocketClientPolicy(
-                host=cfg["policy_host"], port=cfg["policy_port"]
-            )
-            ckpt_path = cfg["policy_ckpt_path"]
-            self.action_norm_stats = _load_action_norm_stats(ckpt_path, cfg["unnorm_key"])
-            self.model_chunk_len = _get_action_chunk_size(ckpt_path)
-            logger.info(
-                "connected to StarVLA %s:%s (chunk=%d, action_dim=%d)",
-                cfg["policy_host"], cfg["policy_port"],
-                self.model_chunk_len, len(self.action_norm_stats["min"]),
-            )
+        # --- StarVLA client ---
+        self.policy = WebsocketClientPolicy(
+            host=cfg["policy_host"], port=cfg["policy_port"]
+        )
+        ckpt_path = cfg["policy_ckpt_path"]
+        self.action_norm_stats = _load_action_norm_stats(ckpt_path, cfg["unnorm_key"])
+        self.model_chunk_len = _get_action_chunk_size(ckpt_path)
+        logger.info(
+            "connected to StarVLA %s:%s (chunk=%d, action_dim=%d)",
+            cfg["policy_host"], cfg["policy_port"],
+            self.model_chunk_len, len(self.action_norm_stats["min"]),
+        )
 
         # --- EBench client ---
         from genmanip_client.eval_client import EvalClient  # lazy; only at eval time
@@ -245,23 +234,6 @@ class EBenchBridge:
         return {"lang": str(instruction), "image": images}
 
     # ------------------------------------------------------------------ #
-    # fake action (delegates to upstream `fake_action`)
-    # ------------------------------------------------------------------ #
-    def _fake_payload(self) -> Dict[str, Any]:
-        """Exactly what `gmp eval -a r5a -g lift2 -c joint_position` would
-        send: a zero-delta `is_rel=True` action. EBench is fixed to this
-        robot/gripper/control combo, so nothing here is configurable."""
-        from genmanip_client.eval_client import fake_action
-        chunk_size = self.fake_chunk_len if self.chunk_mode else 1
-        action = fake_action(
-            arm_type="r5a",
-            gripper_type="lift2",
-            control_type="joint_position",
-            chunk_size=chunk_size,
-        )
-        return {self.worker_id: action}
-
-    # ------------------------------------------------------------------ #
     # StarVLA call
     # ------------------------------------------------------------------ #
     def _predict_chunk(self, example: Dict[str, Any]) -> np.ndarray:
@@ -316,8 +288,7 @@ class EBenchBridge:
                 f"worker_id '{self.worker_id}' not in EBench obs; got {list(obs.keys())}"
             )
         worker_obs = obs[self.worker_id]["obs"]
-        first_step = self._step_counter == 0
-        dump = self.debug and first_step
+        dump = self.debug and self._step_counter == 0
 
         if dump:
             logger.info(
@@ -326,37 +297,32 @@ class EBenchBridge:
             )
 
         t0 = time.time()
-        if self.fake_mode:
-            payload = self._fake_payload()
-            n_actions = self.fake_chunk_len if self.chunk_mode else 1
-        else:
-            example = self._obs_to_example(worker_obs)
-            if dump:
+        example = self._obs_to_example(worker_obs)
+        if dump:
+            logger.info(
+                "=== [debug] bridge → StarVLA: example ===\n%s",
+                _describe(example, "example"),
+            )
+        chunk = self._predict_chunk(example)
+        if dump:
+            logger.info(
+                "=== [debug] StarVLA → bridge: unnormalized chunk ===\n%s",
+                _describe(chunk, "chunk"),
+            )
+            for slice_name, (a, b) in self.layout.items():
+                s = chunk[:, a:b]
                 logger.info(
-                    "=== [debug] bridge → StarVLA: example ===\n%s",
-                    _describe(example, "example"),
+                    "   slice %-14s [%2d:%2d]: min=%.4f max=%.4f mean=%.4f",
+                    slice_name, a, b, s.min(), s.max(), s.mean(),
                 )
-            chunk = self._predict_chunk(example)
-            if dump:
-                logger.info(
-                    "=== [debug] StarVLA → bridge: unnormalized chunk ===\n%s",
-                    _describe(chunk, "chunk"),
-                )
-                for slice_name, (a, b) in self.layout.items():
-                    s = chunk[:, a:b]
-                    logger.info(
-                        "   slice %-14s [%2d:%2d]: min=%.4f max=%.4f mean=%.4f",
-                        slice_name, a, b, s.min(), s.max(), s.mean(),
-                    )
-            actions = self._chunk_to_ebench(chunk)
-            payload = {self.worker_id: actions if self.chunk_mode else actions[0]}
-            n_actions = len(actions) if self.chunk_mode else 1
+        actions = self._chunk_to_ebench(chunk)
+        payload = {self.worker_id: actions if self.chunk_mode else actions[0]}
+        n_actions = len(actions) if self.chunk_mode else 1
         elapsed = time.time() - t0
 
         if dump:
             logger.info(
-                "=== [debug] bridge → EBench: payload (mode=%s) ===\n%s",
-                "fake" if self.fake_mode else "real",
+                "=== [debug] bridge → EBench: payload ===\n%s",
                 _describe(payload, "payload"),
             )
 
@@ -388,11 +354,10 @@ class EBenchBridge:
             self.eval_client.close()
         except Exception:
             logger.exception("EvalClient.close() raised")
-        if self.policy is not None:
-            try:
-                self.policy.close()
-            except Exception:
-                logger.exception("policy.close() raised")
+        try:
+            self.policy.close()
+        except Exception:
+            logger.exception("policy.close() raised")
 
 
 # --------------------------------------------------------------------------- #
