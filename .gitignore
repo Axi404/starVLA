@@ -235,6 +235,7 @@ tmp
 
 */**/*.md
 */*.md
+!examples/**/README.md
 
 # Whitelist specific docs that should be tracked
 !.github/PULL_REQUEST_TEMPLATE.md
