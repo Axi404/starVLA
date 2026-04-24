@@ -13,7 +13,7 @@ We have verified that this workflow runs successfully on both **NVIDIA A100** an
 
 ## ⬇️ 0. Download Checkpoints
 
-We use models trained exclusively on LIBERO to perform zero-shot evaluation on LIBERO-plus.: [🤗 StarVLA/bench-libero](https://huggingface.co/collections/StarVLA/bench-libero). Their corresponding results on LIBERO-plus are summarized in the table below.
+We use models trained exclusively on LIBERO to perform zero-shot evaluation on LIBERO-plus: [🤗 StarVLA/bench-libero](https://huggingface.co/collections/StarVLA/libero). Their corresponding results on LIBERO-plus are summarized in the table below.
 
 ### 📊 Experimental Results
 
