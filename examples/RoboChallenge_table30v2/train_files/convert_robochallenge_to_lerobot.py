@@ -20,7 +20,7 @@ Output layout (LeRobot v2.1 + gr00t modality.json):
         meta/modality.json
         meta/embodiment.json
         data/chunk-000/episode_NNNNNN.parquet
-        videos/chunk-000/<video_key>/episode_NNNNNN.mp4   (symlinked from raw)
+        videos/chunk-000/<video_key>/episode_NNNNNN.mp4   (copied from raw)
 
 State / action conventions (kept identical to the official RoboChallenge
 ``convert_to_lerobot.py`` so EE-pose action heads transfer directly):
@@ -28,7 +28,9 @@ State / action conventions (kept identical to the official RoboChallenge
     UR5  / ARX5 / DOS-W1 (single-arm):
         observation.state  (7,)  = joint_positions(6) + gripper_width(1)
         action             (8,)  = ee_positions(7 quat) + gripper_width(1)
-    ALOHA (dual-arm) — *not implemented yet* (left+right_states.jsonl).
+    ALOHA (dual-arm, left+right_states.jsonl):
+        observation.state  (14,) = L.joint(6) + L.grip(1) + R.joint(6) + R.grip(1)
+        action             (16,) = L.ee(7) + L.grip(1) + R.ee(7) + R.grip(1)
 
 The original script aligns ``state[t] = (joints,gripper) at t-1`` with
 ``action[t] = (ee_pose,gripper) at t``; for ``frame_interval=1`` we keep the
@@ -146,11 +148,61 @@ def _process_episode_single_arm(states_path: Path, frame_interval: int) -> tuple
     return np.stack(states), np.stack(actions), np.asarray(ts, dtype=np.float32), keep_idx
 
 
+def _process_episode_aloha(left_path: Path, right_path: Path, frame_interval: int
+                           ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int]]:
+    """ALOHA bimanual.
+
+    Returns (state[N,14], action[N,16], timestamps[N], src_frame_indices[N]).
+        state  = L.joint(6) + L.grip(1) + R.joint(6) + R.grip(1)
+        action = L.ee(7)    + L.grip(1) + R.ee(7)    + R.grip(1)
+    """
+    left  = _load_jsonl(left_path)
+    right = _load_jsonl(right_path)
+    if len(left) != len(right):
+        raise ValueError(f"left/right state length mismatch: {len(left)} vs {len(right)}")
+    n = len(left)
+    keep_idx: list[int] = []
+    states: list[np.ndarray] = []
+    actions: list[np.ndarray] = []
+    ts: list[float] = []
+    for idx in range(frame_interval, n, frame_interval):
+        pl, pr = left[idx - frame_interval], right[idx - frame_interval]
+        cl, cr = left[idx], right[idx]
+        st = np.concatenate([
+            np.asarray(pl["joint_positions"], dtype=np.float32),
+            np.asarray([pl["gripper_width"]], dtype=np.float32),
+            np.asarray(pr["joint_positions"], dtype=np.float32),
+            np.asarray([pr["gripper_width"]], dtype=np.float32),
+        ])
+        act = np.concatenate([
+            np.asarray(cl["ee_positions"], dtype=np.float32),
+            np.asarray([cl["gripper_width"]], dtype=np.float32),
+            np.asarray(cr["ee_positions"], dtype=np.float32),
+            np.asarray([cr["gripper_width"]], dtype=np.float32),
+        ])
+        states.append(st); actions.append(act)
+        ts.append(float(cl.get("timestamp", idx)))
+        keep_idx.append(idx)
+    return np.stack(states), np.stack(actions), np.asarray(ts, dtype=np.float32), keep_idx
+
+
 def _link_video(src: Path, dst: Path) -> None:
+    """Hardlink the raw video into the lerobot tree.
+
+    Historically this used a symlink, but the bg pipeline removes raw/ after
+    conversion (for non-ALOHA tasks), which broke every symlink. We now use a
+    HARDLINK: same inode, zero extra disk, and the lerobot copy survives even
+    after raw/ is deleted (because the inode persists while a link remains).
+    Both raw/ and lerobot/ are on the same NFS so cross-device link is fine.
+    Falls back to copy if the FS doesn't support hardlinks (e.g. cross-device).
+    """
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists() or dst.is_symlink():
         dst.unlink()
-    os.symlink(src.resolve(), dst)
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
 
 
 def _write_parquet(df_path: Path, state: np.ndarray, action: np.ndarray,
@@ -184,7 +236,7 @@ def convert_task(raw_root: Path, task: str, out_root: Path,
 
     task_info = json.loads((raw_task / "meta/task_info.json").read_text())
     robot = _detect_robot(task_info)
-    if robot not in SINGLE_ARM:
+    if robot not in SINGLE_ARM and robot != "ALOHA":
         raise NotImplementedError(f"Embodiment {robot} not yet supported by this converter.")
     prompt = task_info["task_desc"]["prompt"]
     fps = int(task_info["video_info"]["fps"])
@@ -207,7 +259,10 @@ def convert_task(raw_root: Path, task: str, out_root: Path,
     first_video = episodes_dirs[0] / "videos" / CAMERAS[robot][0][0]
     width, height, _ = _video_meta(first_video)
 
-    state_dim, action_dim = 7, 8  # single-arm convention
+    if robot == "ALOHA":
+        state_dim, action_dim = 14, 16
+    else:
+        state_dim, action_dim = 7, 8  # single-arm convention
 
     info = {
         "codebase_version": "v2.1",
@@ -229,14 +284,28 @@ def convert_task(raw_root: Path, task: str, out_root: Path,
     (out_task / "meta/tasks.jsonl").write_text(json.dumps({"task_index": 0, "task": prompt}) + "\n")
 
     # modality.json (gr00t format)
-    state_subkeys = {
-        "joint_positions": {"original_key": "observation.state", "start": 0, "end": 6},
-        "gripper_width":   {"original_key": "observation.state", "start": 6, "end": 7},
-    }
-    action_subkeys = {
-        "ee_positions":  {"original_key": "action", "start": 0, "end": 7},
-        "gripper_width": {"original_key": "action", "start": 7, "end": 8},
-    }
+    if robot == "ALOHA":
+        state_subkeys = {
+            "joint_positions_left":  {"original_key": "observation.state", "start": 0,  "end": 6},
+            "gripper_width_left":    {"original_key": "observation.state", "start": 6,  "end": 7},
+            "joint_positions_right": {"original_key": "observation.state", "start": 7,  "end": 13},
+            "gripper_width_right":   {"original_key": "observation.state", "start": 13, "end": 14},
+        }
+        action_subkeys = {
+            "ee_positions_left":  {"original_key": "action", "start": 0,  "end": 7},
+            "gripper_width_left": {"original_key": "action", "start": 7,  "end": 8},
+            "ee_positions_right": {"original_key": "action", "start": 8,  "end": 15},
+            "gripper_width_right":{"original_key": "action", "start": 15, "end": 16},
+        }
+    else:
+        state_subkeys = {
+            "joint_positions": {"original_key": "observation.state", "start": 0, "end": 6},
+            "gripper_width":   {"original_key": "observation.state", "start": 6, "end": 7},
+        }
+        action_subkeys = {
+            "ee_positions":  {"original_key": "action", "start": 0, "end": 7},
+            "gripper_width": {"original_key": "action", "start": 7, "end": 8},
+        }
     video_subkeys = {cam: {"original_key": f"observation.images.{cam}"} for _, cam in CAMERAS[robot]}
     modality = {
         "state": state_subkeys,
@@ -261,15 +330,27 @@ def convert_task(raw_root: Path, task: str, out_root: Path,
     total_frames = 0
     new_ep_idx = 0
     for src_dir in episodes_dirs:
-        states_path = src_dir / "states/states.jsonl"
-        if not states_path.is_file():
-            print(f"[convert][skip] missing states.jsonl in {src_dir.name}")
-            continue
-        try:
-            state, action, ts, src_idx = _process_episode_single_arm(states_path, frame_interval)
-        except (KeyError, ValueError) as exc:
-            print(f"[convert][skip] {src_dir.name}: {exc}")
-            continue
+        if robot == "ALOHA":
+            left_path  = src_dir / "states/left_states.jsonl"
+            right_path = src_dir / "states/right_states.jsonl"
+            if not (left_path.is_file() and right_path.is_file()):
+                print(f"[convert][skip] missing left/right_states.jsonl in {src_dir.name}")
+                continue
+            try:
+                state, action, ts, src_idx = _process_episode_aloha(left_path, right_path, frame_interval)
+            except (KeyError, ValueError) as exc:
+                print(f"[convert][skip] {src_dir.name}: {exc}")
+                continue
+        else:
+            states_path = src_dir / "states/states.jsonl"
+            if not states_path.is_file():
+                print(f"[convert][skip] missing states.jsonl in {src_dir.name}")
+                continue
+            try:
+                state, action, ts, src_idx = _process_episode_single_arm(states_path, frame_interval)
+            except (KeyError, ValueError) as exc:
+                print(f"[convert][skip] {src_dir.name}: {exc}")
+                continue
         if state.shape[0] == 0:
             print(f"[convert][skip] empty episode {src_dir.name}")
             continue

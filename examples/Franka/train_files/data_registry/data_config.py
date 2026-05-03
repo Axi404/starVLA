@@ -10,6 +10,7 @@ from starVLA.dataloader.gr00t_lerobot.embodiment_tags import EmbodimentTag
 # DataConfig — Franka Delta EEF
 # ---------------------------------------------------------------------------
 class SingleFrankaRobotiqDeltaEefDataConfig:
+    embodiment_tag = EmbodimentTag.NEW_EMBODIMENT
     video_keys = ["video.base_view", "video.ego_view"]
     state_keys = ["state.eef_position", "state.eef_rotation"]
     action_keys = ["action.delta_eef_position", "action.delta_eef_rotation", "action.gripper_close"]
@@ -48,6 +49,7 @@ class SingleFrankaRobotiqDeltaEefDataConfig:
 # DataConfig — Franka Delta Joints (sim)
 # ---------------------------------------------------------------------------
 class SingleFrankaRobotiqDeltaJointsDataConfig:
+    embodiment_tag = EmbodimentTag.FRANKA
     video_keys = ["video.base_view", "video.ego_view"]
     state_keys = ["state.joints"]
     action_keys = ["action.delta_joints", "action.gripper_close"]
@@ -79,6 +81,7 @@ class SingleFrankaRobotiqDeltaJointsDataConfig:
 # DataConfig — SO101
 # ---------------------------------------------------------------------------
 class SO101Config:
+    embodiment_tag = EmbodimentTag.NEW_EMBODIMENT
     video_keys = ["video.primary_image", "video.wrist_image"]
     state_keys = [
         "state.shoulder_pan.pos", "state.shoulder_lift.pos", "state.elbow_flex.pos",
@@ -122,8 +125,9 @@ ROBOT_TYPE_CONFIG_MAP = {
 }
 
 ROBOT_TYPE_TO_EMBODIMENT_TAG = {
-    "demo_sim_franka_delta_joints": EmbodimentTag.FRANKA,
-    "custom_robot_config": EmbodimentTag.NEW_EMBODIMENT,
+    # Per Proposal A, embodiment_tag now lives as a classvar on each DataConfig.
+    # The registry derives ROBOT_TYPE_TO_EMBODIMENT_TAG automatically. Kept as
+    # an empty dict for backward compat (it is honored as legacy override).
 }
 
 DATASET_NAMED_MIXTURES = {

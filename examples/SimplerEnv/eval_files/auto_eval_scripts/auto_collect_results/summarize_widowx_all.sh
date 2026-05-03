@@ -12,6 +12,8 @@
 # ==============================================================================
 set -uo pipefail
 
+DIR_GLOB=0428_oxe_bridge_rt_1_CosmoPredict2GR00T
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../../../.." && pwd)"
 

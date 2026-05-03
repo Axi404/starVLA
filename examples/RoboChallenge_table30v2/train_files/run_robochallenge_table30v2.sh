@@ -26,7 +26,7 @@ EVAL_EVERY=${EVAL_EVERY:-1000}
 LOG_EVERY=${LOG_EVERY:-5}
 
 run_root_dir=./playground/Checkpoints
-run_id=robochallenge_table30v2_qwenoft_${TASK}_${MAX_STEPS}step
+run_id=0503_${TASK}
 output_dir=${run_root_dir}/${run_id}
 mkdir -p "${output_dir}"
 cp "$0" "${output_dir}/"

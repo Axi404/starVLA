@@ -10,6 +10,7 @@ from starVLA.dataloader.gr00t_lerobot.embodiment_tags import EmbodimentTag
 # DataConfig
 # ---------------------------------------------------------------------------
 class Libero4in1DataConfig:
+    embodiment_tag = EmbodimentTag.FRANKA
     video_keys = [
         "video.primary_image",
         "video.wrist_image",
@@ -72,7 +73,9 @@ ROBOT_TYPE_CONFIG_MAP = {
 # Embodiment Tags
 # ---------------------------------------------------------------------------
 ROBOT_TYPE_TO_EMBODIMENT_TAG = {
-    "libero_franka": EmbodimentTag.FRANKA,
+    # Per Proposal A, embodiment_tag now lives as a classvar on each DataConfig.
+    # The registry derives ROBOT_TYPE_TO_EMBODIMENT_TAG automatically. Kept as
+    # an empty dict for backward compat (it is honored as legacy override).
 }
 
 

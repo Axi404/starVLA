@@ -24,18 +24,20 @@ from starVLA.dataloader.gr00t_lerobot.embodiment_tags import EmbodimentTag
 
 class _RoboChallengeUR5Config:
     """RoboChallenge Table30v2 — UR5 single-arm (2 cameras: cam_global, cam_arm)."""
+    embodiment_tag = EmbodimentTag.UR5
     video_keys = ["video.cam_global", "video.cam_arm"]
     state_keys = ["state.joint_positions", "state.gripper_width"]
     action_keys = ["action.ee_positions", "action.gripper_width"]
     language_keys = ["annotation.human.task_description"]
 
     observation_indices = [0]
-    action_indices = list(range(8))
+    action_indices = list(range(1,50))
+    state_indices = [0]
 
     def modality_config(self):
         return {
             "video":     ModalityConfig(delta_indices=self.observation_indices, modality_keys=self.video_keys),
-            "state":     ModalityConfig(delta_indices=self.observation_indices, modality_keys=self.state_keys),
+            "state":     ModalityConfig(delta_indices=self.state_indices, modality_keys=self.state_keys),
             "action":    ModalityConfig(delta_indices=self.action_indices,      modality_keys=self.action_keys),
             "language":  ModalityConfig(delta_indices=self.observation_indices, modality_keys=self.language_keys),
         }
@@ -45,12 +47,12 @@ class _RoboChallengeUR5Config:
             StateActionToTensor(apply_to=self.state_keys),
             StateActionTransform(
                 apply_to=self.state_keys,
-                normalization_modes={k: "min_max" for k in self.state_keys},
+                normalization_modes={k: "q99" for k in self.state_keys},
             ),
             StateActionToTensor(apply_to=self.action_keys),
             StateActionTransform(
                 apply_to=self.action_keys,
-                normalization_modes={k: "min_max" for k in self.action_keys},
+                normalization_modes={k: "q99" for k in self.action_keys},
             ),
         ])
 
@@ -65,44 +67,108 @@ class _RoboChallengeDOSW1Config(_RoboChallengeUR5Config):
     video_keys = ["video.cam_high", "video.cam_left_wrist", "video.cam_right_wrist"]
 
 
+class _RoboChallengeAlohaConfig:
+    """ALOHA bimanual (3 cameras: cam_high, cam_left_wrist, cam_right_wrist).
+
+    Schema (see converter):
+        observation.state (14,) = L.joint(6) + L.grip(1) + R.joint(6) + R.grip(1)
+        action            (16,) = L.ee(7)    + L.grip(1) + R.ee(7)    + R.grip(1)
+    """
+    embodiment_tag = EmbodimentTag.ALOHA
+    video_keys = ["video.cam_high", "video.cam_left_wrist", "video.cam_right_wrist"]
+    state_keys = [
+        "state.joint_positions_left",  "state.gripper_width_left",
+        "state.joint_positions_right", "state.gripper_width_right",
+    ]
+    action_keys = [
+        "action.ee_positions_left",  "action.gripper_width_left",
+        "action.ee_positions_right", "action.gripper_width_right",
+    ]
+    language_keys = ["annotation.human.task_description"]
+
+    observation_indices = [0]
+    stride = 4
+    action_indices = list(range(0, 50*stride, stride))
+    state_indices = [0]
+
+    def modality_config(self):
+        return {
+            "video":     ModalityConfig(delta_indices=self.observation_indices, modality_keys=self.video_keys),
+            "state":     ModalityConfig(delta_indices=self.state_indices, modality_keys=self.state_keys),
+            "action":    ModalityConfig(delta_indices=self.action_indices,      modality_keys=self.action_keys),
+            "language":  ModalityConfig(delta_indices=self.observation_indices, modality_keys=self.language_keys),
+        }
+
+    def transform(self):
+        return ComposedModalityTransform(transforms=[
+            StateActionToTensor(apply_to=self.state_keys),
+            StateActionTransform(
+                apply_to=self.state_keys,
+                normalization_modes={k: "q99" for k in self.state_keys},
+            ),
+            StateActionToTensor(apply_to=self.action_keys),
+            StateActionTransform(
+                apply_to=self.action_keys,
+                normalization_modes={k: "q99" for k in self.action_keys},
+            ),
+        ])
+
+
 ROBOT_TYPE_CONFIG_MAP = {
     "ur5_robochallenge":   _RoboChallengeUR5Config(),
     "arx5_robochallenge":  _RoboChallengeARX5Config(),
     "dosw1_robochallenge": _RoboChallengeDOSW1Config(),
+    "aloha_robochallenge": _RoboChallengeAlohaConfig(),
 }
-
-ROBOT_TYPE_TO_EMBODIMENT_TAG = {
-    "ur5_robochallenge":   EmbodimentTag.NEW_EMBODIMENT,
-    "arx5_robochallenge":  EmbodimentTag.NEW_EMBODIMENT,
-    "dosw1_robochallenge": EmbodimentTag.NEW_EMBODIMENT,
-}
-
-
-# Single-arm tasks shipped by Table30v2 (verified per-task via task_info.json).
-# Mapping is task_name -> embodiment tag. Update as more tasks finish converting.
-_UR5_TASKS = {
-    "arrange_fruits",
-    "shred_paper",
-}
-_ARX5_TASKS: set[str] = {
-    "arrange_flowers",
-}      # filled after conversion
-_DOSW1_TASKS: set[str] = {
-    "fold_the_clothes",
-}
-
-
-def _entries(task_set, robot_tag):
-    return [(f"lerobot/{t}", 1.0, robot_tag) for t in sorted(task_set)]
-
 
 DATASET_NAMED_MIXTURES = {
     # --- minimal walk-through (1 task) ---
     "robochallenge_table30v2_shred_paper": [
         ("lerobot/shred_paper", 1.0, "ur5_robochallenge"),
     ],
-    # --- per-embodiment ---
-    "robochallenge_table30v2_ur5_all":   _entries(_UR5_TASKS,   "ur5_robochallenge"),
-    "robochallenge_table30v2_arx5_all":  _entries(_ARX5_TASKS,  "arx5_robochallenge"),
-    "robochallenge_table30v2_dosw1_all": _entries(_DOSW1_TASKS, "dosw1_robochallenge"),
+    "robochallenge_table30v2_lint_roller": [
+        ("lerobot/lint_roller_remove_dirt", 1.0, "aloha_robochallenge"),
+    ],
+    # --- UR5 single-arm ---
+    "robochallenge_table30v2_ur5_all": [
+        ("lerobot/arrange_fruits",      1.0, "ur5_robochallenge"),
+        ("lerobot/item_classification", 1.0, "ur5_robochallenge"),
+        ("lerobot/shred_paper",         1.0, "ur5_robochallenge"),
+    ],
+    # --- ARX5 single-arm ---
+    "robochallenge_table30v2_arx5_all": [
+        ("lerobot/arrange_flowers",              1.0, "arx5_robochallenge"),
+        ("lerobot/hang_the_cup",                 1.0, "arx5_robochallenge"),
+        ("lerobot/pick_out_the_green_blocks",    1.0, "arx5_robochallenge"),
+        ("lerobot/press_the_button",             1.0, "arx5_robochallenge"),
+        ("lerobot/turn_on_the_light_switch",     1.0, "arx5_robochallenge"),
+        ("lerobot/water_the_flowers",            1.0, "arx5_robochallenge"),
+        ("lerobot/wipe_the_table",               1.0, "arx5_robochallenge"),
+    ],
+    # --- DOS-W1 single-arm ---
+    "robochallenge_table30v2_dosw1_all": [
+        ("lerobot/fold_the_clothes",                1.0, "dosw1_robochallenge"),
+        ("lerobot/hold_the_tray_with_both_hands",   1.0, "dosw1_robochallenge"),
+        ("lerobot/place_objects_into_desk_drawer",  1.0, "dosw1_robochallenge"),
+        ("lerobot/put_in_pen_container",            1.0, "dosw1_robochallenge"),
+        ("lerobot/put_the_shoes_back",              1.0, "dosw1_robochallenge"),
+        ("lerobot/stack_bowls",                     1.0, "dosw1_robochallenge"),
+        ("lerobot/sweep_the_trash",                 1.0, "dosw1_robochallenge"),
+        ("lerobot/tidy_up_the_makeup_table",        1.0, "dosw1_robochallenge"),
+        ("lerobot/tie_a_knot",                      1.0, "dosw1_robochallenge"),
+        ("lerobot/untie_the_shoelaces",             1.0, "dosw1_robochallenge"),
+    ],
+    # --- ALOHA bimanual ---
+    "robochallenge_table30v2_aloha_all": [
+        ("lerobot/lint_roller_remove_dirt",                 1.0, "aloha_robochallenge"),
+        ("lerobot/pack_the_items",                          1.0, "aloha_robochallenge"),
+        ("lerobot/pack_the_toothbrush_holder",              1.0, "aloha_robochallenge"),
+        ("lerobot/paint_jam",                               1.0, "aloha_robochallenge"),
+        ("lerobot/put_the_books_back",                      1.0, "aloha_robochallenge"),
+        ("lerobot/put_the_pencil_case_into_the_schoolbag",  1.0, "aloha_robochallenge"),
+        ("lerobot/scoop_with_a_small_spoon",                1.0, "aloha_robochallenge"),
+        ("lerobot/stamp_positioning",                       1.0, "aloha_robochallenge"),
+        ("lerobot/wipe_the_blackboard",                     1.0, "aloha_robochallenge"),
+        ("lerobot/wrap_with_a_soft_cloth",                  1.0, "aloha_robochallenge"),
+    ],
 }

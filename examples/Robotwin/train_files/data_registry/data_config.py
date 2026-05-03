@@ -10,6 +10,7 @@ from starVLA.dataloader.gr00t_lerobot.embodiment_tags import EmbodimentTag
 # DataConfig — Agilex (RobotWin, action_indices=16)
 # ---------------------------------------------------------------------------
 class AgilexDataConfig:
+    embodiment_tag = EmbodimentTag.NEW_EMBODIMENT
     video_keys = ["video.cam_high", "video.cam_left_wrist", "video.cam_right_wrist"]
     state_keys = ["state.left_joints", "state.right_joints", "state.left_gripper", "state.right_gripper"]
     action_keys = ["action.left_joints", "action.right_joints", "action.left_gripper", "action.right_gripper"]
@@ -79,6 +80,7 @@ class AgilexData50Config(AgilexDataConfig):
 # DataConfig — ARX X5
 # ---------------------------------------------------------------------------
 class ArxX5DataConfig:
+    embodiment_tag = EmbodimentTag.NEW_EMBODIMENT
     video_keys = ["video.cam_high", "video.cam_left_wrist", "video.cam_right_wrist"]
     state_keys = ["state.left_joints", "state.right_joints", "state.left_gripper", "state.right_gripper"]
     action_keys = ["action.left_joints", "action.right_joints", "action.left_gripper", "action.right_gripper"]
@@ -122,7 +124,9 @@ ROBOT_TYPE_CONFIG_MAP = {
 }
 
 ROBOT_TYPE_TO_EMBODIMENT_TAG = {
-    # Uses NEW_EMBODIMENT fallback (not in base embodiment_tags.py)
+    # Per Proposal A, embodiment_tag now lives as a classvar on each DataConfig.
+    # The registry derives ROBOT_TYPE_TO_EMBODIMENT_TAG automatically. Kept as
+    # an empty dict for backward compat (it is honored as legacy override).
 }
 
 # ---------------------------------------------------------------------------

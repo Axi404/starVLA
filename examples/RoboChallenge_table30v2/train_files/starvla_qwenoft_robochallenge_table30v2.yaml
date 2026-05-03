@@ -13,11 +13,11 @@ framework:
   name: QwenOFT
   qwenvl:
     base_vlm: ./playground/Pretrained_models/Qwen3.5-0.8B
-    attn_implementation: sdpa
+    attn_implementation: flash_attention_2
   action_model:
     action_dim: 8
     state_dim: 7
-    action_horizon: 8
+    action_horizon: 50
 
 datasets:
   vla_data:

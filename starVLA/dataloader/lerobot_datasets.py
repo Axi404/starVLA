@@ -11,7 +11,6 @@ from omegaconf import OmegaConf
 from starVLA.dataloader.gr00t_lerobot.datasets import LeRobotSingleDataset, LeRobotMixtureDataset
 from starVLA.dataloader.gr00t_lerobot.registry import (
     ROBOT_TYPE_CONFIG_MAP,
-    ROBOT_TYPE_TO_EMBODIMENT_TAG,
     DATASET_NAMED_MIXTURES,
     EmbodimentTag,
 )
@@ -40,11 +39,10 @@ def make_LeRobotSingleDataset(
     modality_config = data_config.modality_config()
     transforms = data_config.transform()
     dataset_path = data_root_dir / data_name
-    if robot_type not in ROBOT_TYPE_TO_EMBODIMENT_TAG:
-        print(f"Warning: Robot type {robot_type} not found in ROBOT_TYPE_TO_EMBODIMENT_TAG, using {EmbodimentTag.NEW_EMBODIMENT} as default")
+    embodiment_tag = getattr(data_config, "embodiment_tag", None)
+    if embodiment_tag is None:
+        print(f"Warning: DataConfig for robot_type={robot_type!r} has no embodiment_tag, using {EmbodimentTag.NEW_EMBODIMENT} as default")
         embodiment_tag = EmbodimentTag.NEW_EMBODIMENT
-    else:
-        embodiment_tag = ROBOT_TYPE_TO_EMBODIMENT_TAG[robot_type]
     
     video_backend = data_cfg.get("video_backend", "decord") if data_cfg else "torchvision_av"
     return LeRobotSingleDataset(
@@ -133,7 +131,7 @@ if __name__ == "__main__":
     from tqdm import tqdm
     count = 0
     for batch in tqdm(train_dataloader, desc="Processing Batches"):
-        if count > 100:
+        if count > 3:
             break
         count += 1
         pass
