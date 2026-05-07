@@ -61,9 +61,25 @@ class EmbodimentTag(Enum):
     """ The UR5 single-arm robot.
     """
 
-    DOSW1 = 'dosw1'
-    """ The UR5 single-arm robot.
+    ARX5 = 'arx5'
+    """ The ARX5 single-arm robot.
     """
+
+    DOS_W1 = 'dos-w1'
+    """ The DOS-W1 single-arm robot.
+    """
+
+    TABLE30V2_DOSW1 = "table30v2_dosw1"
+    """Table30v2 RoboChallenge — DOS-W1 dual-arm (14d aloha-style)."""
+
+    TABLE30V2_ALOHA = "table30v2_aloha"
+    """Table30v2 RoboChallenge — ALOHA dual-arm (14d aloha-style)."""
+
+    TABLE30V2_ARX5 = "table30v2_arx5"
+    """Table30v2 RoboChallenge — ARX5 single-arm (14d aloha-style padded)."""
+
+    TABLE30V2_UR5 = "table30v2_ur5"
+    """Table30v2 RoboChallenge — UR5 single-arm (14d aloha-style padded)."""
 
 # Embodiment tag string: to projector index in the Action Expert Module
 EMBODIMENT_TAG_MAPPING = {
@@ -75,5 +91,22 @@ EMBODIMENT_TAG_MAPPING = {
     EmbodimentTag.GR1.value: 24,
     EmbodimentTag.FRANKA.value: 25,
     EmbodimentTag.ALOHA.value: 7,
-    EmbodimentTag.DOSW1.value: 8,
+    EmbodimentTag.UR5.value: 8,
+    EmbodimentTag.ARX5.value: 9,
+    EmbodimentTag.DOS_W1.value: 10,
+    EmbodimentTag.TABLE30V2_DOSW1.value: 27,
+    EmbodimentTag.TABLE30V2_ALOHA.value: 28,
+    EmbodimentTag.TABLE30V2_ARX5.value: 29,
+    EmbodimentTag.TABLE30V2_UR5.value: 30,
+}
+
+# Robot type to embodiment tag mapping
+ROBOT_TYPE_TO_EMBODIMENT_TAG = {
+    "libero_franka": EmbodimentTag.FRANKA,
+    "oxe_droid": EmbodimentTag.OXE_DROID,
+    "oxe_bridge": EmbodimentTag.OXE_BRIDGE,
+    "oxe_rt1": EmbodimentTag.OXE_RT1,
+    "demo_sim_franka_delta_joints": EmbodimentTag.FRANKA,
+    "custom_robot_config": EmbodimentTag.NEW_EMBODIMENT,
+    "fourier_gr1_arms_waist": EmbodimentTag.GR1,
 }

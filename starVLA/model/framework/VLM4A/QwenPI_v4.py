@@ -42,7 +42,7 @@ Parameter breakdown (Qwen3-VL-4B + action_dit_hidden_dim=1024)
 ═══════════════════════════════════════════════════════════════
 """
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -66,6 +66,78 @@ IGNORE_INDEX = -100
 ####################################################
 # ⚠️ Warning: This framework has been restructured and is NOT compatible with checkpoints created before 2025-10-20.
 ####################################################
+
+# ──────────────────────────────────────────────────────────────────────
+#  Robot layout table — controls the instruction meta-tokens injected
+#  before each task description.  Add new embodiments here.
+# ──────────────────────────────────────────────────────────────────────
+ROBOT_LAYOUTS: Dict[str, Dict[str, Any]] = {
+    # ── RoboChallenge Table30v2 ──────────────────────────────────────
+    "robochallenge_ur5": {
+        "action_dim": 8,
+        "chunk_size": 50,
+        "robo_info": "single arm, abs ee (7-dof quat + gripper)",
+        "display_tag": "RoboChallenge UR5",
+        "arm_type": "single arm",
+        "fps": 30.0, # 如果在 data_config 里调整了 action_indices 的 stride，这里也要相应调整 fps / stride，保持时间维度对齐
+    },
+    "robochallenge_arx5": {
+        "action_dim": 8,
+        "chunk_size": 50,
+        "robo_info": "single arm, abs ee (7-dof quat + gripper)",
+        "display_tag": "RoboChallenge ARX5",
+        "arm_type": "single arm",
+        "fps": 30.0, # 如果在 data_config 里调整了 action_indices 的 stride，这里也要相应调整 fps / stride，保持时间维度对齐
+    },
+    "robochallenge_dosw1": {
+        "action_dim": 8,
+        "chunk_size": 50,
+        "robo_info": "single arm, abs ee (7-dof quat + gripper)",
+        "display_tag": "RoboChallenge DOS-W1",
+        "arm_type": "single arm",
+        "fps": 30.0,
+    },
+    "robochallenge_aloha": {
+        "action_dim": 16,
+        "chunk_size": 50,
+        "robo_info": "bimanual, abs ee (7-dof quat + gripper) × (left + right)",
+        "display_tag": "RoboChallenge ALOHA",
+        "arm_type": "dual arms",
+        "fps": 30.0,
+    },
+    # ── General / legacy ────────────────────────────────────────────
+    "franka": {
+        "action_dim": 7,
+        "chunk_size": 16,
+        "robo_info": "single arm, delta eef",
+        "display_tag": "Franka Emika Panda",
+        "arm_type": "single arm",
+        "fps": 20.0,
+    },
+    "oxe_bridge": {
+        "action_dim": 7,
+        "chunk_size": 16,
+        "robo_info": "single arm, delta eef",
+        "display_tag": "WidowX-250",
+        "arm_type": "single arm",
+        "fps": 5.0,
+    },
+}
+
+# Map from embodiment_tag value (stored in dataset samples) to ROBOT_LAYOUTS key.
+# Keys must match EmbodimentTag.value strings exactly.
+EMBODIMENT_TAG_TO_LAYOUT_KEY: Dict[str, str] = {
+    # Generic single-arm / bimanual tags used by data_config.py
+    "ur5":             "robochallenge_ur5",
+    "arx5":            "robochallenge_arx5",
+    "dos-w1":          "robochallenge_dosw1",   # note: hyphen, not underscore
+    "aloha":           "robochallenge_aloha",
+    # Table30v2-scoped variants (forward-compat: same layout as the bare tag)
+    "table30v2_ur5":   "robochallenge_ur5",
+    "table30v2_arx5":  "robochallenge_arx5",
+    "table30v2_dosw1": "robochallenge_dosw1",
+    "table30v2_aloha": "robochallenge_aloha",
+}
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -265,10 +337,8 @@ class QwenPI_v4(baseframework):
             [example["state"] for example in examples] if "state" in examples[0] else None
         )  # List[ndarray (1, state_dim)] or None
 
-        # Prepend discretised proprioceptive state to each instruction string.
-        instructions = (
-            self.add_discretized_state_to_instruction(instructions, state) if state is not None else instructions
-        )
+        # Build full augmented instructions: robot meta + state tokens in one pass.
+        instructions = self._add_robo_meta_tokens_to_instructions(examples, instructions, state)
         state = None  # state is now encoded in the instruction tokens
 
         # Step 1: build QwenVL-compatible inputs
@@ -356,11 +426,9 @@ class QwenPI_v4(baseframework):
         instructions = [example["lang"] for example in examples]  # List[str]
         state = [example["state"] for example in examples] if "state" in examples[0] else None  # List[ndarray] or None
 
-        # Encode proprioceptive state into the instruction string, then discard raw state.
-        instructions = (
-            self.add_discretized_state_to_instruction(instructions, state) if state is not None else instructions
-        )
-        state = None
+        # Build full augmented instructions: robot meta + state tokens in one pass.
+        instructions = self._add_robo_meta_tokens_to_instructions(examples, instructions, state)
+        state = None  # state is now encoded in the instruction tokens
 
         # Optionally resize images to the resolution used during training.
         train_obs_image_size = getattr(self.config.datasets.vla_data, "obs_image_size", None)
@@ -421,6 +489,81 @@ class QwenPI_v4(baseframework):
             updated_instructions.append(f"{instr} [STATE] {state_str} [ACTION]")
         return updated_instructions
 
+    def _resolve_robot_layout(self, example: dict) -> Dict[str, Any]:
+        """Look up the ROBOT_LAYOUTS entry for this sample.
+
+        ``example["robot_tag"]`` is the EmbodimentTag value (e.g. "ARX5", "UR5",
+        "DOS_W1", "ALOHA") set by LeRobotSingleDataset._pack_sample.
+
+        Lookup order:
+        1. Direct key match (in case robot_tag is already a ROBOT_LAYOUTS key).
+        2. EMBODIMENT_TAG_TO_LAYOUT_KEY mapping (normal path for RoboChallenge).
+        3. None → instruction left unchanged (graceful degradation).
+        """
+        robot_tag = example.get("robot_tag")
+        if robot_tag is None:
+            return None
+
+        # Fast path: robot_tag is already a ROBOT_LAYOUTS key
+        if robot_tag in ROBOT_LAYOUTS:
+            return ROBOT_LAYOUTS[robot_tag]
+
+        # Normal path: map EmbodimentTag value → layout key
+        mapped = EMBODIMENT_TAG_TO_LAYOUT_KEY.get(robot_tag)
+        if mapped and mapped in ROBOT_LAYOUTS:
+            return ROBOT_LAYOUTS[mapped]
+
+        return None
+
+    def _add_robo_meta_tokens_to_instructions(
+        self,
+        examples: List[dict],
+        instructions: List[str],
+        states: Optional[List[np.ndarray]] = None,
+    ) -> List[str]:
+        """Build the full augmented instruction string for each sample in one pass.
+
+        Template (robot found in ROBOT_LAYOUTS, state available):
+            "Original_instruction: {instr}.
+             The robot is {tag} with {arm_type}. The control frequency is {fps} Hz.
+             The current robot state is {state_str}.
+             Please predict the next {chunk_size} control actions to execute
+             the original_instruction."
+
+        Template (robot found, no state):
+            Same as above but the state sentence is omitted.
+
+        Template (robot NOT in ROBOT_LAYOUTS — graceful degradation):
+            "{instr} [STATE] {state_str} [ACTION]"   (legacy format, state present)
+            "{instr}"                                 (state absent)
+        """
+
+        # @Jinhui TODO 如果感觉文字太长，可以直接简化模版，节省 token budget for the instruction itself。
+        enhanced = []
+        for i, (example, instr) in enumerate(zip(examples, instructions)):
+            layout = self._resolve_robot_layout(example)
+            state_str = self.state2str_transform(states[i][0]) if states is not None else None
+
+            if layout is None:
+                # Graceful degradation for embodiments not in ROBOT_LAYOUTS.
+                if state_str is not None:
+                    enhanced.append(f"{instr} [STATE] {state_str} [ACTION]")
+                else:
+                    enhanced.append(instr)
+            else:
+                state_part = (
+                    f" The current robot state is {state_str}." if state_str is not None else ""
+                )
+                enhanced.append(
+                    f"Task: {instr}."
+                    f" The robot is {layout['display_tag']} with {layout['arm_type']}."
+                    f" The control frequency is {layout['fps']} Hz."
+                    f"{state_part}"
+                    f" Please predict the next {layout['chunk_size']} actions"
+                    f" to execute the Task."
+                )
+        return enhanced
+
 
 if __name__ == "__main__":
     import argparse
@@ -471,7 +614,7 @@ if __name__ == "__main__":
     image = Image.fromarray(np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8))
     # Create a sample
     sample = {
-        "action": np.random.uniform(-1, 1, size=(16, 7)).astype(np.float16),  # action_chunk, action_dim
+        "action": np.random.uniform(-1, 1, size=(50, 16)).astype(np.float16),  # action_chunk, action_dim
         "image": [image, image],  # two views
         "lang": "This is a fake instruction for testing.",
         "state": np.random.uniform(-1, 1, size=(1, 7)).astype(np.float16),  # chunk, state_dim

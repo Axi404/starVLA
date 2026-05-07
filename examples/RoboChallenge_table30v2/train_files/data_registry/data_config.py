@@ -64,7 +64,7 @@ class _RoboChallengeARX5Config(_RoboChallengeUR5Config):
 
 class _RoboChallengeDOSW1Config(_RoboChallengeUR5Config):
     """DOS-W1 single-arm (3 cameras: cam_high, cam_left_wrist, cam_right_wrist)."""
-    embodiment_tag = EmbodimentTag.DOSW1
+    embodiment_tag = EmbodimentTag.DOS_W1
     video_keys = ["video.cam_high", "video.cam_left_wrist", "video.cam_right_wrist"]
     state_keys = ["state.left_joint_positions", "state.left_gripper_width", "state.right_joint_positions", "state.right_gripper_width"]
     action_keys = ["action.left_joint_positions", "action.left_gripper_width", "action.right_joint_positions", "action.right_gripper_width"]
