@@ -3,36 +3,30 @@
 # with Qwen3VL-OFT. Run from the repo root inside the `starVLA` conda env.
 set -euo pipefail
 
-if [[ "${CONDA_DEFAULT_ENV:-}" != "starVLA_dev" ]]; then
-  source "$(conda info --base)/etc/profile.d/conda.sh"
-  conda activate starVLA_dev
-fi
+export NCCL_SOCKET_IFNAME=bond0
+export NCCL_IB_HCA=mlx5_2,mlx5_3
 
-# DeepSpeed needs a real nvcc. The login-node stub at $HOME/.local/bin/nvcc is
-# not enough — point CUDA_HOME at the cluster CUDA 12.2 toolkit and prepend its
-# bin to PATH.
-export CUDA_HOME=${CUDA_HOME:-/cm/shared/apps/cuda12.2/toolkit/12.2.2}
-export PATH=${CUDA_HOME}/bin:${PATH}
+# used for check save when communication
+export NCCL_BLOCKING_WAIT=1
+export NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_TIMEOUT=1000  # timeout set to 1 hour (unit: seconds)
 
 # How many GPUs to use; defaults to all visible.
 NUM_GPUS=${NUM_GPUS:-$(python -c "import torch;print(torch.cuda.device_count())")}
 
 # ---- training knobs (edit here) ----
 TASK=shred_paper
-BATCH=${BATCH:-2}
-MAX_STEPS=${MAX_STEPS:-100}
-SAVE_EVERY=${SAVE_EVERY:-100}
+BATCH=${BATCH:-8}
+MAX_STEPS=${MAX_STEPS:-150000}
+SAVE_EVERY=${SAVE_EVERY:-10000}
 EVAL_EVERY=${EVAL_EVERY:-1000}
-LOG_EVERY=${LOG_EVERY:-5}
+LOG_EVERY=${LOG_EVERY:-100}
 
 run_root_dir=./playground/Checkpoints
-run_id=0503_${TASK}
+run_id=robochallenge_table30v2_qwenoft_${TASK}_${MAX_STEPS}step
 output_dir=${run_root_dir}/${run_id}
 mkdir -p "${output_dir}"
 cp "$0" "${output_dir}/"
-
-# Disable WandB for the walk-through; remove this line and `wandb login` for real runs.
-export WANDB_MODE=${WANDB_MODE:-disabled}
 
 accelerate launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
@@ -46,4 +40,5 @@ accelerate launch \
   --trainer.eval_interval "${EVAL_EVERY}" \
   --run_root_dir "${run_root_dir}" \
   --run_id "${run_id}" \
-  --wandb_project starVLA_robochallenge_table30v2
+  --wandb_project starVLA_robochallenge_table30v2 \
+  --wandb_entity axi-the-cat
