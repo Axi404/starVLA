@@ -6,11 +6,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 
-CKPT="${CKPT:-./playground/Checkpoints/robochallenge_table30v2_qwenoft_shred_paper_100step/checkpoints/steps_100_pytorch_model.pt}"
-ROBOT_TAG="${ROBOT_TAG:-ur5}"
-PROMPT="${PROMPT:-shred the paper}"
+# Inner file (the dir-wrapped ckpt is symlinked alongside as flat_*.pt for compatibility with read_mode_config).
+CKPT="${CKPT:-./results/QwenOFT-all-150k-50chunk-rc2-dosw1-q99/checkpoints/flat_steps_150000_pytorch_model.pt}"
+ROBOT_TAG="${ROBOT_TAG:-dosw1}"
+PROMPT="${PROMPT:-Fold the T-shirts and stack them neatly in the upper-left corner of the table.}"
 RC_REPO="${RC_REPO:-$HOME/playground/Code/RoboChallengeInference}"
 MAX_WAIT="${MAX_WAIT:-60}"
+N_ACTION_STEPS="${N_ACTION_STEPS:-50}"
 
 source ~/anaconda3/etc/profile.d/conda.sh 2>/dev/null || source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate starVLA_dev
@@ -24,4 +26,5 @@ python examples/RoboChallenge_table30v2/eval_files/test_with_mock_server.py \
     --prompt "${PROMPT}" \
     --rc_repo "${RC_REPO}" \
     --max_wait "${MAX_WAIT}" \
+    --n_action_steps "${N_ACTION_STEPS}" \
     "$@"

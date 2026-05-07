@@ -73,6 +73,14 @@ def main() -> None:
     parser.add_argument("--max_wait", type=int, default=600)
     parser.add_argument("--n_action_steps", type=int, default=8)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--state_action_type", default=None,
+        help="Override spec.state_action_type (e.g. 'bothjoint' for dosw1; the default in ROBOT_SPECS is a guess until upstream confirms).",
+    )
+    parser.add_argument(
+        "--post_action_type", default=None,
+        help="Override spec.post_action_type for the action POST.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
@@ -88,6 +96,12 @@ def main() -> None:
         device=args.device,
     )
     spec = policy.spec
+    if args.state_action_type is not None:
+        logger.info("override spec.state_action_type: %r → %r", spec.state_action_type, args.state_action_type)
+        spec.state_action_type = args.state_action_type
+    if args.post_action_type is not None:
+        logger.info("override spec.post_action_type: %r → %r", spec.post_action_type, args.post_action_type)
+        spec.post_action_type = args.post_action_type
 
     client = InterfaceClient(DEFAULT_USER_ID, mock=True)
     client.update_job_info(DEFAULT_JOB_ID, DEFAULT_ROBOT_ID)
