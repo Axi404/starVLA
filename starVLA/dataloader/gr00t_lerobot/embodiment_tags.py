@@ -61,6 +61,10 @@ class EmbodimentTag(Enum):
     """ The UR5 single-arm robot.
     """
 
+    DOSW1 = 'dosw1'
+    """ The UR5 single-arm robot.
+    """
+
 # Embodiment tag string: to projector index in the Action Expert Module
 EMBODIMENT_TAG_MAPPING = {
     EmbodimentTag.NEW_EMBODIMENT.value: 31,
@@ -71,4 +75,5 @@ EMBODIMENT_TAG_MAPPING = {
     EmbodimentTag.GR1.value: 24,
     EmbodimentTag.FRANKA.value: 25,
     EmbodimentTag.ALOHA.value: 7,
+    EmbodimentTag.DOSW1.value: 8,
 }

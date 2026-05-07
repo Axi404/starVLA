@@ -64,7 +64,12 @@ class _RoboChallengeARX5Config(_RoboChallengeUR5Config):
 
 class _RoboChallengeDOSW1Config(_RoboChallengeUR5Config):
     """DOS-W1 single-arm (3 cameras: cam_high, cam_left_wrist, cam_right_wrist)."""
+    embodiment_tag = EmbodimentTag.DOSW1
     video_keys = ["video.cam_high", "video.cam_left_wrist", "video.cam_right_wrist"]
+    state_keys = ["state.left_joint_positions", "state.left_gripper_width", "state.right_joint_positions", "state.right_gripper_width"]
+    action_keys = ["action.left_joint_positions", "action.left_gripper_width", "action.right_joint_positions", "action.right_gripper_width"]
+    stride = 4
+    action_indices = list(range(0, 50 * stride, stride))
 
 
 class _RoboChallengeAlohaConfig:
@@ -124,51 +129,51 @@ ROBOT_TYPE_CONFIG_MAP = {
 DATASET_NAMED_MIXTURES = {
     # --- minimal walk-through (1 task) ---
     "robochallenge_table30v2_shred_paper": [
-        ("lerobot/shred_paper", 1.0, "ur5_robochallenge"),
+        ("shred_paper", 1.0, "ur5_robochallenge"),
     ],
     "robochallenge_table30v2_lint_roller": [
-        ("lerobot/lint_roller_remove_dirt", 1.0, "aloha_robochallenge"),
+        ("lint_roller_remove_dirt", 1.0, "aloha_robochallenge"),
     ],
     # --- UR5 single-arm ---
     "robochallenge_table30v2_ur5_all": [
-        ("lerobot/arrange_fruits",      1.0, "ur5_robochallenge"),
-        ("lerobot/item_classification", 1.0, "ur5_robochallenge"),
-        ("lerobot/shred_paper",         1.0, "ur5_robochallenge"),
+        ("arrange_fruits",      1.0, "ur5_robochallenge"),
+        ("item_classification", 1.0, "ur5_robochallenge"),
+        ("shred_paper",         1.0, "ur5_robochallenge"),
     ],
     # --- ARX5 single-arm ---
     "robochallenge_table30v2_arx5_all": [
-        ("lerobot/arrange_flowers",              1.0, "arx5_robochallenge"),
-        ("lerobot/hang_the_cup",                 1.0, "arx5_robochallenge"),
-        ("lerobot/pick_out_the_green_blocks",    1.0, "arx5_robochallenge"),
-        ("lerobot/press_the_button",             1.0, "arx5_robochallenge"),
-        ("lerobot/turn_on_the_light_switch",     1.0, "arx5_robochallenge"),
-        ("lerobot/water_the_flowers",            1.0, "arx5_robochallenge"),
-        ("lerobot/wipe_the_table",               1.0, "arx5_robochallenge"),
+        ("arrange_flowers",              1.0, "arx5_robochallenge"),
+        ("hang_the_cup",                 1.0, "arx5_robochallenge"),
+        ("pick_out_the_green_blocks",    1.0, "arx5_robochallenge"),
+        ("press_the_button",             1.0, "arx5_robochallenge"),
+        ("turn_on_the_light_switch",     1.0, "arx5_robochallenge"),
+        ("water_the_flowers",            1.0, "arx5_robochallenge"),
+        ("wipe_the_table",               1.0, "arx5_robochallenge"),
     ],
     # --- DOS-W1 single-arm ---
     "robochallenge_table30v2_dosw1_all": [
-        ("lerobot/fold_the_clothes",                1.0, "dosw1_robochallenge"),
-        ("lerobot/hold_the_tray_with_both_hands",   1.0, "dosw1_robochallenge"),
-        ("lerobot/place_objects_into_desk_drawer",  1.0, "dosw1_robochallenge"),
-        ("lerobot/put_in_pen_container",            1.0, "dosw1_robochallenge"),
-        ("lerobot/put_the_shoes_back",              1.0, "dosw1_robochallenge"),
-        ("lerobot/stack_bowls",                     1.0, "dosw1_robochallenge"),
-        ("lerobot/sweep_the_trash",                 1.0, "dosw1_robochallenge"),
-        ("lerobot/tidy_up_the_makeup_table",        1.0, "dosw1_robochallenge"),
-        ("lerobot/tie_a_knot",                      1.0, "dosw1_robochallenge"),
-        ("lerobot/untie_the_shoelaces",             1.0, "dosw1_robochallenge"),
+        ("fold_the_clothes",                1.0, "dosw1_robochallenge"),
+        ("hold_the_tray_with_both_hands",   1.0, "dosw1_robochallenge"),
+        ("place_objects_into_desk_drawer",  1.0, "dosw1_robochallenge"),
+        ("put_in_pen_container",            1.0, "dosw1_robochallenge"),
+        ("put_the_shoes_back",              1.0, "dosw1_robochallenge"),
+        ("stack_bowls",                     1.0, "dosw1_robochallenge"),
+        ("sweep_the_trash",                 1.0, "dosw1_robochallenge"),
+        ("tidy_up_the_makeup_table",        1.0, "dosw1_robochallenge"),
+        ("tie_a_knot",                      1.0, "dosw1_robochallenge"),
+        ("untie_the_shoelaces",             1.0, "dosw1_robochallenge"),
     ],
     # --- ALOHA bimanual ---
     "robochallenge_table30v2_aloha_all": [
-        ("lerobot/lint_roller_remove_dirt",                 1.0, "aloha_robochallenge"),
-        ("lerobot/pack_the_items",                          1.0, "aloha_robochallenge"),
-        ("lerobot/pack_the_toothbrush_holder",              1.0, "aloha_robochallenge"),
-        ("lerobot/paint_jam",                               1.0, "aloha_robochallenge"),
-        ("lerobot/put_the_books_back",                      1.0, "aloha_robochallenge"),
-        ("lerobot/put_the_pencil_case_into_the_schoolbag",  1.0, "aloha_robochallenge"),
-        ("lerobot/scoop_with_a_small_spoon",                1.0, "aloha_robochallenge"),
-        ("lerobot/stamp_positioning",                       1.0, "aloha_robochallenge"),
-        ("lerobot/wipe_the_blackboard",                     1.0, "aloha_robochallenge"),
-        ("lerobot/wrap_with_a_soft_cloth",                  1.0, "aloha_robochallenge"),
+        ("lint_roller_remove_dirt",                 1.0, "aloha_robochallenge"),
+        ("pack_the_items",                          1.0, "aloha_robochallenge"),
+        ("pack_the_toothbrush_holder",              1.0, "aloha_robochallenge"),
+        ("paint_jam",                               1.0, "aloha_robochallenge"),
+        ("put_the_books_back",                      1.0, "aloha_robochallenge"),
+        ("put_the_pencil_case_into_the_schoolbag",  1.0, "aloha_robochallenge"),
+        ("scoop_with_a_small_spoon",                1.0, "aloha_robochallenge"),
+        ("stamp_positioning",                       1.0, "aloha_robochallenge"),
+        ("wipe_the_blackboard",                     1.0, "aloha_robochallenge"),
+        ("wrap_with_a_soft_cloth",                  1.0, "aloha_robochallenge"),
     ],
 }
