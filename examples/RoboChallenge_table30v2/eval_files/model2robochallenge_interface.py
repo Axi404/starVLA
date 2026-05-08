@@ -94,14 +94,16 @@ ROBOT_SPECS: Dict[str, RobotSpec] = {
         action_dim=8,
         norm_unnorm_key="new_embodiment",
     ),
-    # DOSW1 is dual-arm 14-d. action_type strings below are best-guess for the
-    # upstream protocol; override with --state_action_type / --post_action_type
-    # in test_with_mock_server.py once the upstream mock is up.
+    # DOSW1 is dual-arm 14-d. Verified against upstream cvpr branch:
+    # MockRCRobotW1.ACTION_TYPES = ("joint","pos","leftjoint","leftpos","rightjoint","rightpos");
+    # the both-arm joint literal is "joint" (not "bothjoint"). Server concatenates
+    # left_get_joint() + right_get_joint() → [L_j×6, L_grip, R_j×6, R_grip] which
+    # matches data_config.py's raw state/action key order, so no permutation is needed.
     "dosw1": RobotSpec(
         robot_tag="dosw1",
         image_types=["cam_high", "cam_left_wrist", "cam_right_wrist"],
-        state_action_type="bothjoint",
-        post_action_type="bothjoint",
+        state_action_type="joint",
+        post_action_type="joint",
         state_dim=14,
         action_dim=14,
         # Matches EmbodimentTag.DOS_W1.value used by data_config.py for new

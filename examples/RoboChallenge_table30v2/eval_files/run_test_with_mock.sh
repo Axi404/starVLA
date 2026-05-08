@@ -20,6 +20,12 @@ conda activate starVLA_dev
 export CUDA_HOME="${CUDA_HOME:-/cm/shared/apps/cuda12.2/toolkit/12.2.2}"
 export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
+# Bypass any system-wide HTTP/SOCKS proxy for the mock server on localhost.
+# (e.g. on hosts with HTTP_PROXY/all_proxy=127.0.0.1:7897, requests to the mock
+# get hijacked and 502 with "Bad Gateway" on /clock-sync.)
+export NO_PROXY="${NO_PROXY:-127.0.0.1,localhost}"
+export no_proxy="${no_proxy:-127.0.0.1,localhost}"
+
 python examples/RoboChallenge_table30v2/eval_files/test_with_mock_server.py \
     --checkpoint "${CKPT}" \
     --robot_tag "${ROBOT_TAG}" \

@@ -85,6 +85,31 @@ Expected: prints `(8, 8)` action chunk + ~hundreds-of-ms latency.
 
 You should see one inference per loop with shape `(8, 8)` actions being POSTed.
 
+### Step 2b — DOSW1 dual-arm
+
+Upstream calls this robot **`w1`** (not `dosw1`). Use:
+
+```python
+# mock_server/mock_settings.py
+ROBOT_TAG = 'w1'
+RECORD_DATA_DIR = '/home/gaoning/repos/private/rc2/fold_the_clothes'
+# (absolute path is fine — the upstream sample '../20260413/w1/...' is just a relative example)
+```
+
+Then on our side, `ROBOT_SPECS["dosw1"]` uses
+`state_action_type=post_action_type="joint"` — the upstream W1 robot's
+dual-arm joint literal is `"joint"`, so the server returns one 14-d state
+vector (`[L_j×6, L_grip, R_j×6, R_grip]`) and we POST one 14-d action vector
+in the same layout per step.
+
+```bash
+CKPT=results/QwenOFT-all-150k-50chunk-rc2-dosw1-q99/checkpoints/flat_steps_150000_pytorch_model.pt \
+ROBOT_TAG=dosw1 N_ACTION_STEPS=50 \
+bash examples/RoboChallenge_table30v2/eval_files/run_test_with_mock.sh
+```
+
+Expected: per-iteration log `infer=…ms net=…ms pending=0 first_action=[14 floats]`.
+
 ## Step 3 — production submission (TODO)
 
 Mirror upstream `demo.py` + `robot/job_worker.py::job_loop`. Replace
