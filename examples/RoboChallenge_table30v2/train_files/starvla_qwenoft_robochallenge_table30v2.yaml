@@ -8,32 +8,17 @@ version_id: "0.21"
 
 # DOSW1 dual-arm joint-target training on RoboChallenge Table30v2.
 #   action_dim/state_dim = 14 = L_joints(6) + L_grip(1) + R_joints(6) + R_grip(1)
-#   action_horizon  = 50  (sparse; data_config.py DOSW1.stride=4 → spans 197 raw frames @30Hz)
-#   action_mode     = abs (absolute joint targets)
-#
-# QwenPI_v4 vs QwenPI_v3:
-#   - Adds per-VLM-layer projector (LayerNorm + Linear) compressing each VL hidden
-#     state to action_dit_hidden_dim before feeding the layer-wise cross-DiT.
-#   - Adds the ROBOT_LAYOUTS / EMBODIMENT_TAG_TO_LAYOUT_KEY instruction template:
-#     when example["robot_tag"] resolves to a known layout (e.g. "dos-w1" →
-#     "robochallenge_dosw1"), the LM input becomes
-#       "Task: {instr}. The robot is RoboChallenge DOS-W1 with dual arms.
-#        The control frequency is 30.0 Hz. The current robot state is {state_str}.
-#        Please predict the next 50 actions to execute the Task."
-#     otherwise it falls back to the legacy V3 "{instr} [STATE] {state_str} [ACTION]".
+#   action_horizon = 50, data_config DOSW1.stride=4 → effective 7.5 Hz
 framework:
   name: QwenPI_v4
   qwenvl:
     base_vlm: ./playground/Pretrained_models/Qwen3-VL-2B-Instruct
     attn_implementation: flash_attention_2
-    # vl_hidden_dim and num_vl_layers are auto-detected from the loaded VLM at runtime.
   action_model:
     action_dim: 14
     state_dim: 14
     action_horizon: 50
     diffusion_model_cfg:
-      # Compress VL hidden → 1024 via the new V4 project_layers; DiT runs at 1024.
-      # Set to null/omit to fall back to QwenPI behaviour (DiT hidden = vl_hidden).
       action_dit_hidden_dim: 1024
       attention_head_dim: 64
       dropout: 0.2
@@ -41,11 +26,6 @@ framework:
       interleave_self_attention: true
       norm_type: ada_norm
       positional_embeddings: null
-      # num_layers / input_embedding_dim / cross_attention_dim / num_attention_heads
-      # are auto-populated at runtime by populate_layerwise_dit_cfg
-      # (= num_dit_layers, dit_hidden_dim, dit_hidden_dim, dit_hidden_dim // attention_head_dim).
-    # repeated_diffusion_steps / num_inference_timesteps / noise_* / max_seq_len /
-    # num_target_vision_tokens / add_pos_embed → use V4 defaults (see QwenPI_v4DefaultConfig).
 
 datasets:
   vla_data:

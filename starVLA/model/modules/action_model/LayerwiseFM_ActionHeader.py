@@ -1,7 +1,5 @@
 # Copyright 2025 NVIDIA Corp. and affiliates. All rights reserved.
-# Modified by [Jinhui YE/ HKUST] in [2026].
-# Modification: [rm and add some connect adapter to match with starVLA, e.g., "rm "].
-
+# Modified by Jinhui YE / HKUST in 2026.
 
 from dataclasses import dataclass, field
 
@@ -18,21 +16,17 @@ from starVLA.model.modules.action_model.flow_matching_head.action_encoder import
 )
 from starVLA.model.modules.action_model.flow_matching_head.cross_attention_dit import DiT
 
-# TODO try to meger DiT Modules with follow_match_head, they are just the same arch, but diff loss, use diffusers package will be simple
-
 
 class CategorySpecificLinear(nn.Module):
     def __init__(self, num_categories, input_dim, hidden_dim):
         super().__init__()
         self.num_categories = num_categories
-        # For each category, we have separate weights and biases.
         self.W = nn.Parameter(0.02 * torch.randn(num_categories, input_dim, hidden_dim))
         self.b = nn.Parameter(torch.zeros(num_categories, hidden_dim))
 
     def forward(self, x, cat_ids):
         selected_W = self.W[cat_ids]
         selected_b = self.b[cat_ids]
-        # import ipdb; ipdb.set_trace()
         return torch.bmm(x, selected_W) + selected_b.unsqueeze(1)
 
 
@@ -69,35 +63,18 @@ class ActionEncoder(nn.Module):
         self.pos_encoding = SinusoidalPositionalEncoding(hidden_size)
 
     def forward(self, actions, timesteps):
-        """
-        actions:   shape (B, T, action_dim)
-        timesteps: shape (B,)  -- a single scalar per batch item
-        returns:   shape (B, T, hidden_size)
-        """
+        """actions: (B, T, action_dim); timesteps: (B,) → broadcast to (B, T)."""
         B, T, _ = actions.shape
 
-        # 1) Expand each batch's single scalar time 'tau' across all T steps
-        #    so that shape => (B, T)
-        #    e.g. if timesteps is (B,), replicate across T
         if timesteps.dim() == 1 and timesteps.shape[0] == B:
-            # shape (B,) => (B,T)
             timesteps = timesteps.unsqueeze(1).expand(-1, T)
         else:
             raise ValueError("Expected `timesteps` to have shape (B,) so we can replicate across T.")
 
-        # 2) Standard action MLP step for shape => (B, T, w)
         a_emb = self.layer1(actions)
-
-        # 3) Get the sinusoidal encoding (B, T, w)
         tau_emb = self.pos_encoding(timesteps).to(dtype=a_emb.dtype)
-
-        # 4) Concat along last dim => (B, T, 2w), then layer2 => (B, T, w), swish
-        x = torch.cat([a_emb, tau_emb], dim=-1)
-        x = swish(self.layer2(x))
-
-        # 5) Finally W3 => (B, T, w)
-        x = self.layer3(x)
-        return x
+        x = swish(self.layer2(torch.cat([a_emb, tau_emb], dim=-1)))
+        return self.layer3(x)
 
 
 class MultiEmbodimentActionEncoder(nn.Module):
@@ -106,79 +83,50 @@ class MultiEmbodimentActionEncoder(nn.Module):
         self.hidden_size = hidden_size
         self.num_embodiments = num_embodiments
 
-        # W1: R^{w x d}, W2: R^{w x 2w}, W3: R^{w x w}
-        self.W1 = CategorySpecificLinear(num_embodiments, action_dim, hidden_size)  # (d -> w)
-        self.W2 = CategorySpecificLinear(num_embodiments, 2 * hidden_size, hidden_size)  # (2w -> w)
-        self.W3 = CategorySpecificLinear(num_embodiments, hidden_size, hidden_size)  # (w -> w)
+        self.W1 = CategorySpecificLinear(num_embodiments, action_dim, hidden_size)
+        self.W2 = CategorySpecificLinear(num_embodiments, 2 * hidden_size, hidden_size)
+        self.W3 = CategorySpecificLinear(num_embodiments, hidden_size, hidden_size)
         self.pos_encoding = SinusoidalPositionalEncoding(hidden_size)
 
     def forward(self, actions, timesteps, cat_ids):
-        """
-        actions:   shape (B, T, action_dim)
-        timesteps: shape (B,)  -- a single scalar per batch item
-        cat_ids:   shape (B,)
-        returns:   shape (B, T, hidden_size)
-        """
+        """actions: (B, T, action_dim); timesteps: (B,); cat_ids: (B,) → (B, T, hidden_size)."""
         B, T, _ = actions.shape
 
-        # 1) Expand each batch's single scalar time 'tau' across all T steps
-        #    so that shape => (B, T)
-        #    e.g. if timesteps is (B,), replicate across T
         if timesteps.dim() == 1 and timesteps.shape[0] == B:
-            # shape (B,) => (B,T)
             timesteps = timesteps.unsqueeze(1).expand(-1, T)
         else:
             raise ValueError("Expected `timesteps` to have shape (B,) so we can replicate across T.")
 
-        # 2) Standard action MLP step for shape => (B, T, w)
         a_emb = self.W1(actions, cat_ids)
-
-        # 3) Get the sinusoidal encoding (B, T, w)
         tau_emb = self.pos_encoding(timesteps).to(dtype=a_emb.dtype)
-
-        # 4) Concat along last dim => (B, T, 2w), then W2 => (B, T, w), swish
-        x = torch.cat([a_emb, tau_emb], dim=-1)
-        x = swish(self.W2(x, cat_ids))
-
-        # 5) Finally W3 => (B, T, w)
-        x = self.W3(x, cat_ids)
-        return x
+        x = swish(self.W2(torch.cat([a_emb, tau_emb], dim=-1), cat_ids))
+        return self.W3(x, cat_ids)
 
 
 @dataclass
 class FlowmatchingActionHeadConfig(PretrainedConfig):
-    """NOTE: N1.5 uses XEmbFlowmatchingPolicyHeadConfig as action head"""
-
-    add_pos_embed: bool = field(default=True, metadata={"help": "Whether to add positional embedding"})
-    diffusion_model_cfg: dict = field(default=None, metadata={"help": "Diffusion model configuration."})
-    input_embedding_dim: int = field(default=1536, metadata={"help": "Input embedding channel dimension."})
-
-    hidden_size: int = field(default=1024, metadata={"help": "Input embedding dimension."})
-    max_seq_len: int = field(default=1024, metadata={"help": "Maxium Sequence Length"})
-    action_dim: int = field(default=None, metadata={"help": "Action dimension."})
-    action_horizon: int = field(default=None, metadata={"help": "Action horizon."})
-    noise_beta_alpha: float = field(default=1.5, metadata={"help": ""})
-    noise_beta_beta: float = field(default=1.0, metadata={"help": ""})
-    noise_s: float = field(default=0.999, metadata={"help": "Flow matching noise Beta distribution s."})
-    num_timestep_buckets: int = field(default=1000, metadata={"help": "Number of timestep discretization buckets."})
-    num_inference_timesteps: int = field(
-        default=None,
-        metadata={"help": "Number of inference steps for noise diffusion."},
-    )
-    max_num_embodiments: int = field(default=32, metadata={"help": "Number of embodiments."})
-    tune_projector: bool = field(default=True, metadata={"help": "Whether to tune the projector."})
-    tune_diffusion_model: bool = field(default=True, metadata={"help": "Whether to tune the diffusion model."})
-    load_pretrained_det_decode_layer_path: str = field(
-        default=None, metadata={"help": "Path to pretrained detection model."}
-    )
-    detection_coeff: float = field(default=1.0, metadata={"help": "Detection coefficient."})
-
+    add_pos_embed: bool = field(default=True)
+    diffusion_model_cfg: dict = field(default=None)
+    input_embedding_dim: int = field(default=1536)
+    hidden_size: int = field(default=1024)
+    max_seq_len: int = field(default=1024)
+    action_dim: int = field(default=None)
+    action_horizon: int = field(default=None)
+    noise_beta_alpha: float = field(default=1.5)
+    noise_beta_beta: float = field(default=1.0)
+    noise_s: float = field(default=0.999)
+    num_timestep_buckets: int = field(default=1000)
+    num_inference_timesteps: int = field(default=None)
+    max_num_embodiments: int = field(default=32)
+    tune_projector: bool = field(default=True)
+    tune_diffusion_model: bool = field(default=True)
+    load_pretrained_det_decode_layer_path: str = field(default=None)
+    detection_coeff: float = field(default=1.0)
     freeze_decode_layer: bool = field(default=False)
     expand_batch: int = field(default=None)
     use_vlln: bool = field(default=True)
-
     vl_self_attention_cfg: dict = field(default=None)
-    num_target_vision_tokens: int = field(default=32, metadata={"help": "Number of target vision tokens."})
+    num_target_vision_tokens: int = field(default=32)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -186,74 +134,48 @@ class FlowmatchingActionHeadConfig(PretrainedConfig):
             setattr(self, key, value)
 
 
+# Fallback DiT shape used only when the framework forgot to populate
+# diffusion_model_cfg via populate_layerwise_dit_cfg.
 DiTConfig = {
     "num_layers": 36,
     "input_embedding_dim": 2048,
     "attention_head_dim": 64,
     "num_attention_heads": 32,
-}  # default for qwen2.5-vl
+}
 
 
 class LayerwiseFlowmatchingActionHead(nn.Module):
-    """
-    Layer-wise cross-attention DiT action head.
+    """Layer-wise cross-attention DiT action head.
 
-    NOTE on configuration boundary:
-        This module is intentionally decoupled from any specific VLM backbone.
-        It ONLY reads from ``global_config.framework.action_model`` (and its
-        ``diffusion_model_cfg`` sub-tree).  The framework (e.g. ``Qwen_PI`` /
-        ``Qwen_PI_v3``) is responsible for populating ``diffusion_model_cfg``
-        with the correct DiT shape **before** calling ``get_action_model``:
-
-            diffusion_model_cfg.num_layers           = <DiT depth>
-            diffusion_model_cfg.input_embedding_dim  = <DiT internal hidden>
-            diffusion_model_cfg.cross_attention_dim  = <DiT internal hidden>
-            diffusion_model_cfg.num_attention_heads  = input_embedding_dim // attention_head_dim
-
-        The head no longer reads ``framework.qwenvl.*`` directly.  See
-        ``starVLA/model/framework/VLM4A/diffusion_model_cfg.md`` for details.
+    Decoupled from any specific VLM backbone — only reads from
+    ``global_config.framework.action_model`` (and its ``diffusion_model_cfg``
+    sub-tree).  The framework is responsible for populating
+    ``diffusion_model_cfg`` with the DiT shape via
+    ``populate_layerwise_dit_cfg`` BEFORE calling ``get_action_model``.
     """
 
-    def __init__(
-        self,
-        global_config,
-        **kwargs,
-    ):
+    def __init__(self, global_config, **kwargs):
         super().__init__()
         action_config = global_config.framework.action_model
         diffusion_model_cfg = action_config.diffusion_model_cfg
 
-        # ------------------------------------------------------------------
-        # Pure consumer: trust diffusion_model_cfg.  Apply DiTConfig only as
-        # a fallback for keys the framework forgot to set.  This keeps the
-        # head free of any VLM-specific knowledge.
-        # ------------------------------------------------------------------
         for k, v in DiTConfig.items():
             if diffusion_model_cfg.get(k, None) is None:
                 diffusion_model_cfg[k] = v
 
-        # Build a plain dict view and drop framework-side hints that are NOT
-        # DiT constructor kwargs (e.g. `action_dit_hidden_dim`).  This keeps the
-        # head agnostic of any framework convention while still being safe
-        # against accidentally-leaked hint keys.
+        # Drop framework-side hint keys that are not DiT constructor kwargs.
         _DIT_NON_KWARGS = {"action_dit_hidden_dim"}
         diffusion_model_cfg_kwargs = {k: v for k, v in diffusion_model_cfg.items() if k not in _DIT_NON_KWARGS}
 
         self.input_embedding_dim = diffusion_model_cfg_kwargs["input_embedding_dim"]
-        self.model = DiT(**diffusion_model_cfg_kwargs)  # TODO: ideally copy LLM init from VLM
+        self.model = DiT(**diffusion_model_cfg_kwargs)
         self.dit_out_hidden_size = self.input_embedding_dim
         self.action_dim = action_config.action_dim
-        # `action_horizon` is the canonical chunk length.  Legacy YAMLs are
-        # normalised by share_tools.apply_config_compat upstream, so this
-        # head never reads `future_action_window_size`.
         self.action_horizon = int(action_config.action_horizon)
         self.num_inference_timesteps = action_config.num_inference_timesteps
 
         self.state_encoder = (
-            MLP(
-                input_dim=action_config.state_dim,
-                output_dim=self.input_embedding_dim,
-            )
+            MLP(input_dim=action_config.state_dim, output_dim=self.input_embedding_dim)
             if action_config.state_dim
             else None
         )
@@ -285,6 +207,39 @@ class LayerwiseFlowmatchingActionHead(nn.Module):
     def prepare_input(self, batch: dict) -> BatchFeature:
         return BatchFeature(data=batch)
 
+    def _build_sa_embs(self, action_features, state_features, batch_size):
+        """Concat (state? + future_tokens + action_features) along seq dim."""
+        if self.config.add_pos_embed:
+            pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=action_features.device)
+            action_features = action_features + self.position_embedding(pos_ids).unsqueeze(0)
+
+        future_tokens = self.future_tokens.weight.unsqueeze(0).expand(batch_size, -1, -1)
+        if state_features is not None:
+            return torch.cat((state_features, future_tokens, action_features), dim=1)
+        return torch.cat((future_tokens, action_features), dim=1)
+
+    def _run_dit(self, sa_embs, vl_embs_list, encoder_attention_mask, temb):
+        """Manual block-by-block iteration so each layer can read its matching VL embs.
+
+        We must reproduce ``DiT.forward``'s gating here: when
+        ``interleave_self_attention=True``, odd-indexed blocks were built with
+        ``cross_attention_dim=None`` and must run pure self-attn — but
+        diffusers' ``Attention`` does cross-attn whenever ``encoder_hidden_states``
+        is passed, regardless of init-time config.  So odd blocks need
+        ``encoder_hidden_states=None`` to actually self-attend.
+        """
+        interleave_self_attn = bool(getattr(self.model.config, "interleave_self_attention", False))
+        out = sa_embs
+        for layer_idx, layer in enumerate(self.model.transformer_blocks):
+            is_self_attn = interleave_self_attn and (layer_idx % 2 == 1)
+            out = layer(
+                hidden_states=out,
+                encoder_hidden_states=None if is_self_attn else vl_embs_list[layer_idx],
+                encoder_attention_mask=None if is_self_attn else encoder_attention_mask,
+                temb=temb,
+            )
+        return out
+
     def forward(
         self,
         vl_embs_list: list,
@@ -292,61 +247,31 @@ class LayerwiseFlowmatchingActionHead(nn.Module):
         state: torch.Tensor = None,
         encoder_attention_mask=None,
     ):
+        """vl_embs_list: per-DiT-layer encoder hiddens, each (B, S, D).
+        actions: (B, action_horizon, action_dim).
+        encoder_attention_mask: optional (B, S) bool.
         """
-        vl_embs: list of torch.Tensor, each shape (B, seq_length, feature_dim)
-        actions: shape (B, action_horizon, D_action)
-        encoder_attention_mask: optional (B, seq_length) bool/int
-        """
-        device = actions.device
-        num_layers = len(vl_embs_list)
-        B, L, D = vl_embs_list[0].shape
-        # Embed noised action trajectory.
-        noise = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
-        t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)
-        t = t[:, None, None]  # shape (B,1,1) for broadcast
+        B = vl_embs_list[0].shape[0]
 
+        noise = torch.randn_like(actions)
+        t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)[:, None, None]
         noisy_trajectory = (1 - t) * noise + t * actions
         velocity = actions - noise
 
-        # Convert (continuous) t -> discrete if needed
         t_discretized = (t[:, 0, 0] * self.num_timestep_buckets).long()
         action_features = self.action_encoder(noisy_trajectory, t_discretized)
 
-        # Embed state
         state_features = self.state_encoder(state) if state is not None else None
 
-        # Maybe add position embedding.
-        if self.config.add_pos_embed:
-            pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
-            pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
-            action_features = action_features + pos_embs
-
-        # state and action embedding along sequence dimension.
-        future_tokens = self.future_tokens.weight.unsqueeze(0).expand(B, -1, -1)
-        sa_embs = (
-            torch.cat((state_features, future_tokens, action_features), dim=1)
-            if state_features is not None
-            else torch.cat((future_tokens, action_features), dim=1)
-        )
-
-        # Encode timesteps
+        sa_embs = self._build_sa_embs(action_features, state_features, B)
         temb = self.model.timestep_encoder(t_discretized)
+        model_output = self._run_dit(sa_embs, vl_embs_list, encoder_attention_mask, temb)
 
-        # Layerwise cross-attention with vl_embs
-        model_output = sa_embs
-        for layer_idx, layer in enumerate(self.model.transformer_blocks):
-            model_output = layer(
-                hidden_states=model_output,
-                encoder_hidden_states=vl_embs_list[layer_idx],  # Use layer-specific vl_embs
-                encoder_attention_mask=encoder_attention_mask,
-                temb=temb,
-            )
-
-        # TODO miss self att and _process_output, but work well
+        # TODO: a final pure-self-attn stack here would let action tokens refine
+        # each other after layerwise cross-attn (currently only happens on odd
+        # layers when interleave_self_attention=True).
         pred = self.action_decoder(model_output)
         pred_actions = pred[:, -actions.shape[1] :]
-
-        # Slice out only the action portion of pred and target.
         loss = ((pred_actions - velocity) ** 2).mean()
         return loss
 
@@ -357,7 +282,6 @@ class LayerwiseFlowmatchingActionHead(nn.Module):
         state: torch.Tensor = None,
         encoder_attention_mask=None,
     ) -> torch.Tensor:
-        # Set initial actions as the sampled noise.
         batch_size = vl_embs_list[0].shape[0]
         device = vl_embs_list[0].device
         actions = torch.randn(
@@ -368,50 +292,21 @@ class LayerwiseFlowmatchingActionHead(nn.Module):
 
         num_steps = self.num_inference_timesteps
         dt = 1.0 / num_steps
-
         state_features = self.state_encoder(state) if state is not None else None
 
-        # Run denoising steps.
         for t in range(num_steps):
-            t_cont = t / float(num_steps)
-            t_discretized_int = int(t_cont * self.num_timestep_buckets)
+            t_discretized_int = int(t / float(num_steps) * self.num_timestep_buckets)
             timesteps_tensor = torch.full(
                 size=(batch_size,), fill_value=t_discretized_int, device=device, dtype=torch.long
             )
 
-            # Embed current action trajectory with timestep
             action_features = self.action_encoder(actions, timesteps_tensor)
-
-            # Maybe add position embedding.
-            if self.config.add_pos_embed:
-                pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
-                pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
-                action_features = action_features + pos_embs
-
-            future_tokens = self.future_tokens.weight.unsqueeze(0).expand(batch_size, -1, -1)
-            sa_embs = (
-                torch.cat((state_features, future_tokens, action_features), dim=1)
-                if state_features is not None
-                else torch.cat((future_tokens, action_features), dim=1)
-            )
-
-            # Encode timestep
+            sa_embs = self._build_sa_embs(action_features, state_features, batch_size)
             temb = self.model.timestep_encoder(timesteps_tensor)
+            model_output = self._run_dit(sa_embs, vl_embs_list, encoder_attention_mask, temb)
 
-            # Layerwise cross-attention with vl_embs_list
-            model_output = sa_embs
-            for layer_idx, layer in enumerate(self.model.transformer_blocks):
-                model_output = layer(
-                    hidden_states=model_output,
-                    encoder_hidden_states=vl_embs_list[layer_idx],
-                    encoder_attention_mask=encoder_attention_mask,
-                    temb=temb,
-                )
-            # TODO miss self att and _process_output
             pred = self.action_decoder(model_output)
             pred_velocity = pred[:, -self.action_horizon :]
-
-            # Euler integration
             actions = actions + dt * pred_velocity
         return actions
 
@@ -425,19 +320,9 @@ class LayerwiseFlowmatchingActionHead(nn.Module):
 
 
 def get_action_model(config=None):
-    """
-    Factory: build FlowmatchingActionHead from global framework config.
-
-    Args:
-        config: Global config (expects config.framework.action_model namespace).
-
-    Returns:
-        FlowmatchingActionHead: Initialized FlowMatchingActionHead.
-    """
+    """Build LayerwiseFlowmatchingActionHead from global framework config."""
     return LayerwiseFlowmatchingActionHead(global_config=config)
 
 
 if __name__ == "__main__":
-    # TODO make each backbone.py can be debug independently
-
     pass
