@@ -11,10 +11,10 @@ side, not the policy:
     ``stop_robot``) that the mock server does not implement.
 
 Caveat — ``job_loop`` takes a *single* ``action_type`` for both ``/state.pkl``
-and ``/action``.  For dosw1 / aloha that's fine (joint ↔ joint).  For ur5 /
-arx5 our ``ROBOT_SPECS`` declares ``leftjoint`` for state and ``leftpos`` for
-post; we provide a small ``DualActionTypeGPUClient`` that re-fetches state
-inside ``infer`` so single-arm submissions still work.
+and ``/action``.  Only dosw1 satisfies that (joint ↔ joint).  ur5 / arx5
+(leftjoint state / leftpos action) and aloha (joint state / pos action)
+go through ``DualActionTypeGPUClient``, which re-fetches state inside
+``infer`` so the policy sees the right tensor shape.
 
 Usage::
 
@@ -62,12 +62,19 @@ class GPUClient:
 
 
 class DualActionTypeGPUClient(GPUClient):
-    """For specs whose state_action_type ≠ post_action_type (ur5 / arx5).
+    """For specs whose state_action_type ≠ post_action_type (ur5 / arx5 / aloha).
 
     ``job_loop`` only knows one action_type for both directions.  We pass the
     *post* action_type to ``job_loop`` so ``post_actions`` is correct, then
     re-fetch state with our preferred ``state_action_type`` inside ``infer``.
     Costs one extra GET per iter.
+
+    Note: ``job_loop`` already gated the outer state to ``"normal"`` before
+    calling us, but our re-fetch can race the platform's robot-state machine.
+    We deliberately don't retry — if the second GET returns ``"abnormal"`` /
+    ``"size_none"`` then ``run_policy`` will fail loud (KeyError on missing
+    camera or shape mismatch), which surfaces upstream rather than silently
+    posting a bad action chunk.
     """
 
     def __init__(self, policy: RoboChallengePolicy, client, image_size) -> None:

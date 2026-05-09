@@ -41,15 +41,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class RobotSpec:
-    robot_tag: str                    # adapter nickname: "ur5" | "arx5" | "dosw1"
+    robot_tag: str                    # adapter nickname: "ur5" | "arx5" | "dosw1" | "aloha"
     image_types: List[str]            # cameras requested from /state.pkl, in order
     state_action_type: str            # action_type for GET /state.pkl
     post_action_type: str             # action_type for POST /action
     state_dim: int                    # policy state input dim
     action_dim: int                   # policy action output dim
     norm_unnorm_key: str              # = EmbodimentTag.value, e.g. "table30v2_dosw1"
-    norm_mode: str = "q99"            # must match data_config.py StateActionTransform
-                                      # — see _NORM_FNS for supported modes.
+    norm_mode: str                    # required: must match the StateActionTransform
+                                      # mode used in data_config.py.transform() —
+                                      # one of _NORM_FNS keys.  No default to force
+                                      # explicit declaration per robot.
 
 
 ROBOT_SPECS: Dict[str, RobotSpec] = {
@@ -61,6 +63,7 @@ ROBOT_SPECS: Dict[str, RobotSpec] = {
         state_dim=7,
         action_dim=8,
         norm_unnorm_key="table30v2_ur5",
+        norm_mode="q99",
     ),
     "arx5": RobotSpec(
         robot_tag="arx5",
@@ -70,6 +73,7 @@ ROBOT_SPECS: Dict[str, RobotSpec] = {
         state_dim=7,
         action_dim=8,
         norm_unnorm_key="table30v2_arx5",
+        norm_mode="q99",
     ),
     # DOSW1 is dual-arm 14d.  The RC server returns state in
     # [L_joints×6, L_grip, R_joints×6, R_grip] order (verified against upstream
@@ -83,6 +87,21 @@ ROBOT_SPECS: Dict[str, RobotSpec] = {
         state_dim=14,
         action_dim=14,
         norm_unnorm_key="table30v2_dosw1",
+        norm_mode="q99",
+    ),
+    # ALOHA is dual-arm too, but state and action use different action_types:
+    # state is 14d joint (L.joint+L.grip+R.joint+R.grip), actions are 16d ee
+    # (L.ee(7-quat)+L.grip+R.ee(7-quat)+R.grip).  job_loop only takes one
+    # action_type — run_demo.py routes this through DualActionTypeGPUClient.
+    "aloha": RobotSpec(
+        robot_tag="aloha",
+        image_types=["cam_high", "cam_left_wrist", "cam_right_wrist"],
+        state_action_type="joint",
+        post_action_type="pos",
+        state_dim=14,
+        action_dim=16,
+        norm_unnorm_key="table30v2_aloha",
+        norm_mode="q99",
     ),
 }
 
