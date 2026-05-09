@@ -1,9 +1,12 @@
-"""Policy bridge for RoboChallenge_table30v2 evaluation.
+"""Policy bridge for RoboChallenge Table30v2 evaluation.
 
 Wraps a trained ``baseframework`` checkpoint and adapts it to the I/O contract
-of ``https://github.com/RoboChallenge/RoboChallengeInference`` (cvpr branch):
+of ``https://github.com/RoboChallenge/RoboChallengeInference`` (cvpr branch).
 
-State input from the RC server (pickled dict)::
+Per-robot shapes / cameras / action_types live in ``ROBOT_SPECS`` and must
+stay in sync with ``train_files/data_registry/data_config.py``.
+
+State payload from the RC server (unpickled GET /state.pkl)::
 
     {
         "images":  {"<cam_name>": <PNG bytes>, ...},
@@ -12,17 +15,6 @@ State input from the RC server (pickled dict)::
         "timestamp": float,
         "state":   "normal" | "abnormal" | "size_none",
     }
-
-The wrapper reads camera PNGs + state, runs the policy, and returns an action
-chunk ready to be POSTed via ``InterfaceClient.post_actions``.
-
-Single-arm (UR5/ARX5) returns 8-d actions; dual-arm DOSW1 returns 14-d. The
-DOSW1 stack also needs (a) q99 normalization (matching training) and (b) a
-permutation between the parquet "raw" layout and the starvla dataloader's
-internal layout (joints first, then grippers). See ``state_layout`` below.
-
-Robot-specific shapes are read from a small registry below — consistent with
-``examples/RoboChallenge_table30v2/train_files/data_registry/data_config.py``.
 """
 
 from __future__ import annotations
@@ -44,47 +36,31 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Layout permutations (kept for downstream callers; not needed by DOSW1 here)
-# ---------------------------------------------------------------------------
-# Some external pipelines (e.g. an upstream Table30v2 ref script the user has)
-# concatenate gr00t sub-keys grouped by type, putting all joints first and all
-# grippers last. This repo's data_config.py keeps the parquet's raw concat
-# order ([L_j×6, L_grip, R_j×6, R_grip]) — confirmed by inspection of
-# dataset_statistics.json (narrowest q99-q01 band at indices 6 and 13). So
-# DOSW1 here does NOT need a permutation. The constants below are exposed for
-# callers that bring stats in starvla-rearranged order.
-RAW_TO_STARVLA = np.array([0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 6, 13], dtype=np.int64)
-STARVLA_TO_RAW = np.array([0, 1, 2, 3, 4, 5, 12, 6, 7, 8, 9, 10, 11, 13], dtype=np.int64)
-
-
-# ---------------------------------------------------------------------------
 # Robot registry — keep in sync with train_files/data_registry/data_config.py
 # ---------------------------------------------------------------------------
 
 @dataclass
 class RobotSpec:
-    robot_tag: str                    # adapter nickname: "ur5" | "arx5" | "dosw1" | "aloha"
-    image_types: List[str]            # cameras requested from /state.pkl in order
-    state_action_type: str            # action_type used to fetch the *state* (we want joint+gripper)
-    post_action_type: str             # action_type used to *post* actions
+    robot_tag: str                    # adapter nickname: "ur5" | "arx5" | "dosw1"
+    image_types: List[str]            # cameras requested from /state.pkl, in order
+    state_action_type: str            # action_type for GET /state.pkl
+    post_action_type: str             # action_type for POST /action
     state_dim: int                    # policy state input dim
     action_dim: int                   # policy action output dim
-    norm_unnorm_key: str              # key inside dataset_statistics.json (= EmbodimentTag.value, e.g. "table30v2_dosw1")
-    norm_mode: str = "min_max"        # "min_max" | "q99" — must match training transform
-    state_layout: str = "model"       # "model" (no perm) | "raw_dosw1" (legacy: raw↔starvla perm)
+    norm_unnorm_key: str              # = EmbodimentTag.value, e.g. "table30v2_dosw1"
+    norm_mode: str = "q99"            # must match data_config.py StateActionTransform
+                                      # — see _NORM_FNS for supported modes.
 
 
-# Keep entries sorted by introduction date for diff-friendliness.
 ROBOT_SPECS: Dict[str, RobotSpec] = {
     "ur5": RobotSpec(
         robot_tag="ur5",
         image_types=["cam_global", "cam_arm"],
-        state_action_type="leftjoint",   # state["action"] = joint(6)+gripper(1) = 7
-        post_action_type="leftpos",      # outgoing actions = ee_pose(7 quat)+gripper(1) = 8
+        state_action_type="leftjoint",   # state["action"] = joint(6)+gripper(1) = 7d
+        post_action_type="leftpos",      # outgoing actions = ee_pose(7 quat)+gripper(1) = 8d
         state_dim=7,
         action_dim=8,
         norm_unnorm_key="table30v2_ur5",
-        norm_mode="q99",
     ),
     "arx5": RobotSpec(
         robot_tag="arx5",
@@ -94,13 +70,11 @@ ROBOT_SPECS: Dict[str, RobotSpec] = {
         state_dim=7,
         action_dim=8,
         norm_unnorm_key="table30v2_arx5",
-        norm_mode="q99",
     ),
-    # DOSW1 is dual-arm 14-d. Verified against upstream cvpr branch:
-    # MockRCRobotW1.ACTION_TYPES = ("joint","pos","leftjoint","leftpos","rightjoint","rightpos");
-    # the both-arm joint literal is "joint" (not "bothjoint"). Server concatenates
-    # left_get_joint() + right_get_joint() → [L_j×6, L_grip, R_j×6, R_grip] which
-    # matches data_config.py's raw state/action key order, so no permutation is needed.
+    # DOSW1 is dual-arm 14d.  The RC server returns state in
+    # [L_joints×6, L_grip, R_joints×6, R_grip] order (verified against upstream
+    # MockRCRobotW1: left_get_joint() + right_get_joint()), which matches
+    # data_config.py's state_keys / action_keys order — no permutation needed.
     "dosw1": RobotSpec(
         robot_tag="dosw1",
         image_types=["cam_high", "cam_left_wrist", "cam_right_wrist"],
@@ -109,9 +83,6 @@ ROBOT_SPECS: Dict[str, RobotSpec] = {
         state_dim=14,
         action_dim=14,
         norm_unnorm_key="table30v2_dosw1",
-        norm_mode="q99",
-        # state_layout left at default "model": data_config.py preserves raw
-        # [L_j×6, L_grip, R_j×6, R_grip] order in stats — no permutation needed.
     ),
 }
 
@@ -123,10 +94,8 @@ ROBOT_SPECS: Dict[str, RobotSpec] = {
 def _load_norm_stats(checkpoint_path: str | Path) -> dict:
     """Load ``dataset_statistics.json`` from the run dir of *checkpoint_path*.
 
-    Layout::
-
-        <run_dir>/dataset_statistics.json
-        <run_dir>/checkpoints/steps_*_pytorch_model.pt
+    Supports two layouts: ``<run>/dataset_statistics.json`` next to either
+    ``<run>/checkpoints/steps_*.pt`` or a flat ``<run>/steps_*.pt``.
     """
     ckpt = Path(checkpoint_path)
     run_dir = ckpt.parents[1] if ckpt.parents[1].joinpath("dataset_statistics.json").exists() else ckpt.parent
@@ -138,23 +107,22 @@ def _load_norm_stats(checkpoint_path: str | Path) -> dict:
 
 
 def _decode_png(buf: bytes) -> np.ndarray:
-    """Decode PNG bytes returned by RC ``/state.pkl`` into an HxWx3 RGB ndarray."""
     img = Image.open(io.BytesIO(buf)).convert("RGB")
     return np.asarray(img)
 
 
-def _normalize_min_max(state: np.ndarray, stats: dict) -> np.ndarray:
-    """min-max normalization: ``y = 2*(x - min)/(max - min) - 1`` with passthrough where min==max."""
+def _normalize_min_max(x: np.ndarray, stats: dict) -> np.ndarray:
+    """``y = 2*(x - min)/(max - min) - 1``, passthrough where min == max."""
     s_min = np.asarray(stats["min"], dtype=np.float32)
     s_max = np.asarray(stats["max"], dtype=np.float32)
-    out = state.astype(np.float32).copy()
+    out = x.astype(np.float32).copy()
     mask = s_max != s_min
     out[..., mask] = 2.0 * (out[..., mask] - s_min[mask]) / (s_max[mask] - s_min[mask]) - 1.0
     return out
 
 
 def _unnormalize_min_max(norm_action: np.ndarray, stats: dict) -> np.ndarray:
-    """Inverse of min-max for actions, respecting the ``mask`` field."""
+    """Inverse of min_max for actions, respecting the optional ``mask`` field."""
     a_min = np.asarray(stats["min"], dtype=np.float32)
     a_max = np.asarray(stats["max"], dtype=np.float32)
     mask = np.asarray(stats.get("mask", [True] * len(a_min)), dtype=bool)
@@ -163,10 +131,9 @@ def _unnormalize_min_max(norm_action: np.ndarray, stats: dict) -> np.ndarray:
 
 
 def _normalize_q99(x: np.ndarray, stats: dict) -> np.ndarray:
-    """q99 normalization: ``y = clip(2*(x - q01)/(q99 - q01) - 1, -1, 1)``.
+    """``y = clip(2*(x - q01)/(q99 - q01) - 1, -1, 1)``.
 
-    Mirrors gr00t's StateActionTransform with ``normalization_modes={k:"q99"}``;
-    used during training of the dosw1-q99 run.
+    Mirrors gr00t StateActionTransform with ``normalization_modes={k: "q99"}``.
     """
     q01 = np.asarray(stats["q01"], dtype=np.float32)
     q99 = np.asarray(stats["q99"], dtype=np.float32)
@@ -178,23 +145,38 @@ def _normalize_q99(x: np.ndarray, stats: dict) -> np.ndarray:
 
 
 def _unnormalize_q99(norm_action: np.ndarray, stats: dict) -> np.ndarray:
-    """Inverse of q99, applied uniformly across dims.
-
-    Mirrors gr00t's training-time ``StateActionTransform.inverse`` for mode='q99'
-    (see starVLA/dataloader/gr00t_lerobot/transform/state_action.py:198-201),
-    which does *not* consult ``stats["mask"]`` — the gripper q01/q99 range is
-    nonzero (≈ 0..0.07), so it was normalized at training and must be inverted
-    here. Any ``stats["mask"]`` field present is intentionally ignored.
-    """
+    """Inverse of q99, applied uniformly across dims.  Does NOT consult
+    ``stats["mask"]`` — gr00t's training-side inverse doesn't either."""
     q01 = np.asarray(stats["q01"], dtype=np.float32)
     q99 = np.asarray(stats["q99"], dtype=np.float32)
     norm = np.clip(norm_action.astype(np.float32), -1.0, 1.0)
     return (norm + 1.0) / 2.0 * (q99 - q01) + q01
 
 
+def _normalize_mean_std(x: np.ndarray, stats: dict) -> np.ndarray:
+    """``y = (x - mean) / std``, passthrough where std == 0."""
+    mean = np.asarray(stats["mean"], dtype=np.float32)
+    std = np.asarray(stats["std"], dtype=np.float32)
+    out = x.astype(np.float32).copy()
+    mask = std != 0
+    out[..., mask] = (out[..., mask] - mean[mask]) / std[mask]
+    return out
+
+
+def _unnormalize_mean_std(x: np.ndarray, stats: dict) -> np.ndarray:
+    """Inverse of mean_std."""
+    mean = np.asarray(stats["mean"], dtype=np.float32)
+    std = np.asarray(stats["std"], dtype=np.float32)
+    out = x.astype(np.float32).copy()
+    mask = std != 0
+    out[..., mask] = out[..., mask] * std[mask] + mean[mask]
+    return out
+
+
 _NORM_FNS = {
-    "min_max": (_normalize_min_max, _unnormalize_min_max),
-    "q99": (_normalize_q99, _unnormalize_q99),
+    "min_max":  (_normalize_min_max,  _unnormalize_min_max),
+    "q99":      (_normalize_q99,      _unnormalize_q99),
+    "mean_std": (_normalize_mean_std, _unnormalize_mean_std),
 }
 
 
@@ -203,28 +185,23 @@ _NORM_FNS = {
 # ---------------------------------------------------------------------------
 
 class RoboChallengePolicy:
-    """Concrete ``DummyPolicy`` replacement compatible with upstream demo.py / test.py.
+    """``DummyPolicy`` replacement for upstream demo.py / test.py.
 
-    Owns the model directly (no websocket) — keeps the hop count low for the
-    self-test and for the production demo loop where latency matters.
+    Owns the model directly (no websocket).  Two entry points::
 
-    Usage (HTTP / mock-server style)::
+        # HTTP / mock-server style — feed the unpickled GET /state.pkl dict:
+        policy = RoboChallengePolicy(checkpoint_path, robot_tag="dosw1")
+        actions = policy.run_policy(state_dict, prompt="...")
 
-        policy = RoboChallengePolicy(checkpoint_path, robot_tag="ur5")
-        actions = policy.run_policy(state_dict, prompt="shred the paper")
-        # actions: list[list[float]] with shape (n_action_steps, 8) for UR5.
-
-    Usage (local closed-loop, skip PNG roundtrip)::
-
-        actions = policy.predict_from_pil(pil_images, raw_state, prompt=...)
-        # actions: np.ndarray, shape (n_action_steps, action_dim) in raw layout.
+        # Local closed-loop — skip PNG roundtrip:
+        actions = policy.predict_from_pil(pil_images, raw_state, prompt="...")
     """
 
     def __init__(
         self,
         checkpoint_path: str,
-        robot_tag: str = "ur5",
-        n_action_steps: int = 8,
+        robot_tag: str = "dosw1",
+        n_action_steps: int = 50,
         image_size: Sequence[int] = (224, 224),
         device: str = "cuda",
         use_bf16: bool = True,
@@ -249,44 +226,31 @@ class RoboChallengePolicy:
 
         norm_stats_full = _load_norm_stats(checkpoint_path)
         if self.spec.norm_unnorm_key not in norm_stats_full:
-            available = list(norm_stats_full.keys())
-            if len(available) == 1:
-                self.spec.norm_unnorm_key = available[0]
-                logger.warning("[RC] unnorm_key fallback to %s (only one available)", available[0])
-            else:
-                raise KeyError(f"unnorm_key {self.spec.norm_unnorm_key} not in {available}")
+            raise KeyError(
+                f"unnorm_key {self.spec.norm_unnorm_key!r} not in dataset_statistics.json "
+                f"(have {list(norm_stats_full)})"
+            )
         self.state_stats = norm_stats_full[self.spec.norm_unnorm_key]["state"]
         self.action_stats = norm_stats_full[self.spec.norm_unnorm_key]["action"]
 
-        # Cache last prompt for logging.
         self._last_prompt: Optional[str] = None
 
-    # ------------------------------------------------------------------
-    # Public API expected by upstream GPUClient
-    # ------------------------------------------------------------------
+    # --- Public API expected by upstream GPUClient --------------------------
 
     def run_policy(self, input_data: dict, prompt: Optional[str] = None) -> List[List[float]]:
-        """Single-call inference compatible with the upstream RC server payload.
+        """Single-call inference compatible with the RC server payload.
 
-        Args:
-            input_data: The unpickled response of ``GET /state.pkl`` — see module docstring.
-            prompt: Free-form task instruction.
-
-        Returns:
-            list[list[float]]: ``n_action_steps`` actions, each of length ``action_dim``,
-            in the robot's *raw* layout (matching what the server expects).
+        Returns ``n_action_steps`` actions × ``action_dim``, JSON-serialisable
+        for ``InterfaceClient.post_actions``.
         """
-        # ---- 1. Decode PNG → PIL ----------------------------------------
         images_dict = input_data.get("images") or {}
         pil_images: List[Image.Image] = []
         for cam in self.spec.image_types:
             if cam not in images_dict:
                 raise KeyError(f"[RC] Missing camera {cam!r} in state.images keys={list(images_dict)}")
-            arr = _decode_png(images_dict[cam])
-            pil_images.append(Image.fromarray(arr))
+            pil_images.append(Image.fromarray(_decode_png(images_dict[cam])))
 
         raw_state = np.asarray(input_data.get("action") or [], dtype=np.float32)
-
         actions = self.predict_from_pil(pil_images, raw_state, prompt=prompt)
         return actions.astype(np.float32).tolist()
 
@@ -296,71 +260,43 @@ class RoboChallengePolicy:
         raw_state: np.ndarray,
         prompt: Optional[str] = None,
     ) -> np.ndarray:
-        """Direct inference entry, skipping PNG (en|de)code.
-
-        Args:
-            pil_images: One PIL.Image per camera, in ``self.spec.image_types`` order.
-                Resized to ``self.image_size`` automatically.
-            raw_state: 1-D array of length ``self.spec.state_dim`` in the robot's
-                *raw* layout (parquet / RC server order).
-            prompt: Task instruction.
-
-        Returns:
-            np.ndarray of shape ``(n_action_steps, action_dim)`` in *raw* layout,
-            un-normalized.
-        """
+        """Direct inference without PNG (en|de)code.  Returns ``(n_action_steps, action_dim)``."""
         if prompt is not None and prompt != self._last_prompt:
             logger.info("[RC] Prompt: %r", prompt)
             self._last_prompt = prompt
         instruction = prompt if prompt else (self._last_prompt or "perform the task")
 
-        # ---- 1. Resize PIL to configured image size ---------------------
         if len(pil_images) != len(self.spec.image_types):
             raise ValueError(
                 f"[RC] expected {len(self.spec.image_types)} cam images "
                 f"(order: {self.spec.image_types}), got {len(pil_images)}"
             )
-        resized: List[Image.Image] = []
-        for img in pil_images:
-            if (img.height, img.width) != self.image_size:
-                img = img.resize((self.image_size[1], self.image_size[0]), Image.BILINEAR)
-            resized.append(img)
+        resized = [
+            img if (img.height, img.width) == self.image_size
+            else img.resize((self.image_size[1], self.image_size[0]), Image.BILINEAR)
+            for img in pil_images
+        ]
 
-        # ---- 2. State: raw → (perm) → normalize -------------------------
         raw_state = np.asarray(raw_state, dtype=np.float32).reshape(-1)
         if raw_state.size != self.spec.state_dim:
             raise ValueError(
                 f"[RC] state vector length {raw_state.size} != expected {self.spec.state_dim} "
-                f"(make sure state_action_type={self.spec.state_action_type!r} is correct)"
+                f"(check state_action_type={self.spec.state_action_type!r})"
             )
-        if self.spec.state_layout == "raw_dosw1":
-            state_model_layout = raw_state[RAW_TO_STARVLA]
-        else:
-            state_model_layout = raw_state
-        norm_state = self._normalize(state_model_layout, self.state_stats)  # (D,)
-        state_input = norm_state[None, :]  # (1, D)
+        norm_state = self._normalize(raw_state, self.state_stats)
 
-        # ---- 3. Forward -------------------------------------------------
         sample = {
             "image": list(resized),
             "lang": instruction,
-            "state": state_input,
+            "state": norm_state[None, :],
         }
         out = self.model.predict_action([sample])
         normalized_actions = np.asarray(out["normalized_actions"])  # (1, T, D)
 
-        # ---- 4. Unnormalize, slice horizon, undo perm -------------------
-        actions_model = self._unnormalize(normalized_actions[0], self.action_stats)  # (T, D)
-        actions_model = actions_model[: self.n_action_steps]
-        if self.spec.state_layout == "raw_dosw1":
-            actions_raw = actions_model[:, STARVLA_TO_RAW]
-        else:
-            actions_raw = actions_model
-        return actions_raw.astype(np.float32)
+        actions = self._unnormalize(normalized_actions[0], self.action_stats)
+        return actions[: self.n_action_steps].astype(np.float32)
 
-    # ------------------------------------------------------------------
-    # Convenience accessors used by the launcher scripts
-    # ------------------------------------------------------------------
+    # --- Convenience accessors used by the launcher scripts -----------------
 
     @property
     def image_type(self) -> List[str]:

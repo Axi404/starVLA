@@ -1,33 +1,24 @@
 """Step-2 self test: drive the upstream RC mock_server with our policy.
 
-This is a near drop-in for ``RoboChallengeInference/test.py`` but with
-``DummyPolicy`` swapped for :class:`RoboChallengePolicy`.
+Drop-in for ``RoboChallengeInference/test.py`` with ``DummyPolicy`` swapped
+for :class:`RoboChallengePolicy`.
 
-Prerequisites:
+Setup (once)::
 
-1. Clone upstream once and start the mock server, e.g.::
+    cd ~/playground/Code
+    git clone -b cvpr https://github.com/RoboChallenge/RoboChallengeInference.git
+    cd RoboChallengeInference/mock_server
+    # edit mock_settings.py: ROBOT_TAG='w1', RECORD_DATA_DIR=<raw episode>
+    python3 mock_robot_server.py            # listens on 0.0.0.0:9098
 
-       cd playground/Code
-       git clone -b cvpr https://github.com/RoboChallenge/RoboChallengeInference.git
-       cd RoboChallengeInference
-       # edit mock_server/mock_settings.py to point at your raw episode dir
-       cd mock_server && python3 mock_robot_server.py   # listens on 0.0.0.0:9098
+Then in another shell::
 
-2. In another shell run *this* script with ``--rc_repo`` pointing at the cloned
-   path (we add it to ``sys.path`` so we can import upstream's
-   ``robot.interface_client.InterfaceClient`` without vendoring it)::
+    bash examples/RoboChallenge_table30v2/eval_files/run_test_with_mock.sh
 
-       python examples/RoboChallenge_table30v2/eval_files/test_with_mock_server.py \\
-           --checkpoint .../steps_100_pytorch_model.pt \\
-           --robot_tag ur5 --prompt "shred the paper" \\
-           --rc_repo $HOME/playground/Code/RoboChallengeInference \\
-           --max_wait 60
-
-Notes:
-  * We use *two* action_types per cycle: ``leftjoint`` to fetch the joint
-    state, ``leftpos`` to post ee-pose actions.  The mock server treats each
-    request independently, so this is supported.
-  * ``duration`` is the inter-action interval the robot will use to interpolate.
+Note: single-arm specs (UR5/ARX5) use *two* action_types per cycle —
+``leftjoint`` for state + ``leftpos`` for actions.  The mock server treats
+each request independently, so this works.  ``job_loop`` (production) does
+NOT support that combo — see ``run_demo.py`` for the real-platform variant.
 """
 
 from __future__ import annotations
@@ -71,16 +62,8 @@ def main() -> None:
     )
     parser.add_argument("--duration", type=float, default=0.05)
     parser.add_argument("--max_wait", type=int, default=600)
-    parser.add_argument("--n_action_steps", type=int, default=8)
+    parser.add_argument("--n_action_steps", type=int, default=50)
     parser.add_argument("--device", default="cuda")
-    parser.add_argument(
-        "--state_action_type", default=None,
-        help="Override spec.state_action_type (e.g. 'bothjoint' for dosw1; the default in ROBOT_SPECS is a guess until upstream confirms).",
-    )
-    parser.add_argument(
-        "--post_action_type", default=None,
-        help="Override spec.post_action_type for the action POST.",
-    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
@@ -96,12 +79,6 @@ def main() -> None:
         device=args.device,
     )
     spec = policy.spec
-    if args.state_action_type is not None:
-        logger.info("override spec.state_action_type: %r → %r", spec.state_action_type, args.state_action_type)
-        spec.state_action_type = args.state_action_type
-    if args.post_action_type is not None:
-        logger.info("override spec.post_action_type: %r → %r", spec.post_action_type, args.post_action_type)
-        spec.post_action_type = args.post_action_type
 
     client = InterfaceClient(DEFAULT_USER_ID, mock=True)
     client.update_job_info(DEFAULT_JOB_ID, DEFAULT_ROBOT_ID)
