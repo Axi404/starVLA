@@ -64,6 +64,8 @@ def main() -> None:
     parser.add_argument("--max_wait", type=int, default=600)
     parser.add_argument("--n_action_steps", type=int, default=50)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--action_mode", default=None, choices=("abs", "rel", "delta"),
+                        help="Override ckpt config.yaml's action_mode (default: auto from yaml).")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
@@ -77,6 +79,7 @@ def main() -> None:
         robot_tag=args.robot_tag,
         n_action_steps=args.n_action_steps,
         device=args.device,
+        action_mode=args.action_mode,
     )
     spec = policy.spec
 

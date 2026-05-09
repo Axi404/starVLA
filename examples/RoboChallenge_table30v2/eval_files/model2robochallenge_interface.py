@@ -110,19 +110,76 @@ ROBOT_SPECS: Dict[str, RobotSpec] = {
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _load_norm_stats(checkpoint_path: str | Path) -> dict:
-    """Load ``dataset_statistics.json`` from the run dir of *checkpoint_path*.
+def _resolve_run_dir(checkpoint_path: str | Path) -> Path:
+    ckpt = Path(checkpoint_path).resolve()
+    for p in (ckpt.parent, *ckpt.parents):
+        if (p / "dataset_statistics.json").exists():
+            return p
+    raise FileNotFoundError(f"No dataset_statistics.json found walking up from {ckpt}")
 
-    Supports two layouts: ``<run>/dataset_statistics.json`` next to either
-    ``<run>/checkpoints/steps_*.pt`` or a flat ``<run>/steps_*.pt``.
-    """
-    ckpt = Path(checkpoint_path)
-    run_dir = ckpt.parents[1] if ckpt.parents[1].joinpath("dataset_statistics.json").exists() else ckpt.parent
-    stats_json = run_dir / "dataset_statistics.json"
-    if not stats_json.exists():
-        raise FileNotFoundError(f"Missing dataset_statistics.json beside {ckpt} (looked in {run_dir})")
-    with stats_json.open() as f:
+
+def _load_norm_stats(checkpoint_path: str | Path) -> dict:
+    run_dir = _resolve_run_dir(checkpoint_path)
+    with (run_dir / "dataset_statistics.json").open() as f:
         return json.load(f)
+
+
+def _read_yaml_field(checkpoint_path: str | Path, dotted_key: str, default):
+    run_dir = _resolve_run_dir(checkpoint_path)
+    leaf = dotted_key.rsplit(".", 1)[-1]
+    for name in ("config.yaml", "config.full.yaml"):
+        cfg_path = run_dir / name
+        if not cfg_path.exists():
+            continue
+        try:
+            from omegaconf import OmegaConf
+            cfg = OmegaConf.load(str(cfg_path))
+            v = OmegaConf.select(cfg, dotted_key, default=None)
+        except Exception:
+            v = None
+            for line in cfg_path.read_text().splitlines():
+                s = line.strip()
+                if s.startswith(f"{leaf}:"):
+                    v = s.split(":", 1)[1].strip().strip("\"'")
+                    break
+        if v is not None and v != "":
+            return v
+    return default
+
+
+def _load_action_mode_from_run_dir(checkpoint_path: str | Path) -> str:
+    mode = _read_yaml_field(checkpoint_path, "datasets.vla_data.action_mode", "abs")
+    logger.info("[RC] action_mode=%r", mode)
+    return str(mode)
+
+
+def _load_include_state_from_run_dir(checkpoint_path: str | Path) -> bool:
+    raw = _read_yaml_field(checkpoint_path, "datasets.vla_data.include_state", False)
+    val = (str(raw).lower() == "true") if isinstance(raw, str) else bool(raw)
+    logger.info("[RC] include_state=%s", val)
+    return val
+
+
+def _delta_to_absolute(pred_delta: np.ndarray, state: np.ndarray) -> np.ndarray:
+    if pred_delta.shape[1] != state.shape[0]:
+        raise ValueError(
+            f"delta inverse needs action_dim == state_dim (got "
+            f"{pred_delta.shape[1]} vs {state.shape[0]})."
+        )
+    out = np.empty_like(pred_delta, dtype=np.float32)
+    out[0] = pred_delta[0] + state
+    for t in range(1, len(pred_delta)):
+        out[t] = pred_delta[t] + out[t - 1]
+    return out
+
+
+def _rel_to_absolute(pred_rel: np.ndarray, state: np.ndarray) -> np.ndarray:
+    if pred_rel.shape[1] != state.shape[0]:
+        raise ValueError(
+            f"rel inverse needs action_dim == state_dim (got "
+            f"{pred_rel.shape[1]} vs {state.shape[0]})."
+        )
+    return pred_rel.astype(np.float32) + state.astype(np.float32)[None, :]
 
 
 def _decode_png(buf: bytes) -> np.ndarray:
@@ -224,6 +281,7 @@ class RoboChallengePolicy:
         image_size: Sequence[int] = (224, 224),
         device: str = "cuda",
         use_bf16: bool = True,
+        action_mode: Optional[str] = None,
     ) -> None:
         if robot_tag not in ROBOT_SPECS:
             raise ValueError(f"Unsupported robot_tag={robot_tag}; options={list(ROBOT_SPECS)}")
@@ -232,12 +290,18 @@ class RoboChallengePolicy:
             raise ValueError(f"Unsupported norm_mode={self.spec.norm_mode!r}; options={list(_NORM_FNS)}")
         self._normalize, self._unnormalize = _NORM_FNS[self.spec.norm_mode]
 
+        self.action_mode = action_mode or _load_action_mode_from_run_dir(checkpoint_path)
+        if self.action_mode not in ("abs", "rel", "delta"):
+            raise ValueError(f"Unsupported action_mode={self.action_mode!r}; options=abs/rel/delta")
+        self.include_state = _load_include_state_from_run_dir(checkpoint_path)
+
         self.checkpoint_path = checkpoint_path
         self.n_action_steps = int(n_action_steps)
         self.image_size = tuple(image_size)
         self.device = torch.device(device)
 
-        logger.info("[RC] Loading framework from %s", checkpoint_path)
+        logger.info("[RC] Loading framework from %s (robot=%s, action_mode=%s, include_state=%s)",
+                    checkpoint_path, robot_tag, self.action_mode, self.include_state)
         self.model = baseframework.from_pretrained(checkpoint_path)
         if use_bf16:
             self.model = self.model.to(torch.bfloat16)
@@ -307,12 +371,17 @@ class RoboChallengePolicy:
         sample = {
             "image": list(resized),
             "lang": instruction,
-            "state": norm_state[None, :],
         }
+        if self.include_state:
+            sample["state"] = norm_state[None, :]
         out = self.model.predict_action([sample])
-        normalized_actions = np.asarray(out["normalized_actions"])  # (1, T, D)
+        normalized_actions = np.asarray(out["normalized_actions"])
 
         actions = self._unnormalize(normalized_actions[0], self.action_stats)
+        if self.action_mode == "rel":
+            actions = _rel_to_absolute(actions, raw_state)
+        elif self.action_mode == "delta":
+            actions = _delta_to_absolute(actions, raw_state)
         return actions[: self.n_action_steps].astype(np.float32)
 
     # --- Convenience accessors used by the launcher scripts -----------------

@@ -33,6 +33,7 @@ datasets:
     data_root_dir: playground/Datasets/RoboChallenge_table30v2/next_state
     data_mix: robochallenge_table30v2_dosw1_all
     action_mode: rel
+    include_state: true
     obs_image_size: [224, 224]
     delete_pause_frame: false
     sequential_step_sampling: false

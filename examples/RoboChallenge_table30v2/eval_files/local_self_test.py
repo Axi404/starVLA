@@ -60,6 +60,8 @@ def main() -> None:
     parser.add_argument("--no_bf16", action="store_true")
     parser.add_argument("--n_warmup", type=int, default=1)
     parser.add_argument("--n_runs", type=int, default=3)
+    parser.add_argument("--action_mode", default=None, choices=("abs", "rel", "delta"),
+                        help="Override ckpt config.yaml's action_mode (default: auto from yaml).")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
@@ -71,6 +73,7 @@ def main() -> None:
         n_action_steps=args.n_action_steps,
         device=args.device,
         use_bf16=not args.no_bf16,
+        action_mode=args.action_mode,
     )
 
     spec = ROBOT_SPECS[args.robot_tag]
