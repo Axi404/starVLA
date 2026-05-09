@@ -27,7 +27,7 @@ class _RoboChallengeUR5Config:
     state(7) = joint_positions(6) + gripper_width(1)
     action(8) = ee_positions(7-quat) + gripper_width(1)
     """
-    embodiment_tag = EmbodimentTag.UR5
+    embodiment_tag = EmbodimentTag.TABLE30V2_UR5
     video_keys = ["video.cam_global", "video.cam_arm"]
     state_keys = ["state.joint_positions", "state.gripper_width"]
     action_keys = ["action.ee_positions", "action.gripper_width"]
@@ -63,6 +63,7 @@ class _RoboChallengeUR5Config:
 
 class _RoboChallengeARX5Config(_RoboChallengeUR5Config):
     """ARX5 single-arm (3 cameras: cam_global, cam_arm, cam_side)."""
+    embodiment_tag = EmbodimentTag.TABLE30V2_ARX5
     video_keys = ["video.cam_global", "video.cam_arm", "video.cam_side"]
 
 
@@ -71,7 +72,7 @@ class _RoboChallengeDOSW1Config(_RoboChallengeUR5Config):
     state(14)  = L.joint(6) + L.grip(1) + R.joint(6) + R.grip(1)
     action(14) = same layout, abs joint targets.
     """
-    embodiment_tag = EmbodimentTag.DOS_W1
+    embodiment_tag = EmbodimentTag.TABLE30V2_DOSW1
     video_keys = ["video.cam_high", "video.cam_left_wrist", "video.cam_right_wrist"]
     state_keys = [
         "state.left_joint_positions", "state.left_gripper_width",
@@ -88,7 +89,7 @@ class _RoboChallengeAlohaConfig(_RoboChallengeUR5Config):
     state(14)  = L.joint(6) + L.grip(1) + R.joint(6) + R.grip(1)
     action(16) = L.ee(7-quat) + L.grip(1) + R.ee(7-quat) + R.grip(1)
     """
-    embodiment_tag = EmbodimentTag.ALOHA
+    embodiment_tag = EmbodimentTag.TABLE30V2_ALOHA
     video_keys = ["video.cam_high", "video.cam_left_wrist", "video.cam_right_wrist"]
     state_keys = [
         "state.joint_positions_left",  "state.gripper_width_left",

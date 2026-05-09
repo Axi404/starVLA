@@ -69,7 +69,7 @@ class RobotSpec:
     post_action_type: str             # action_type used to *post* actions
     state_dim: int                    # policy state input dim
     action_dim: int                   # policy action output dim
-    norm_unnorm_key: str              # key inside dataset_statistics.json (e.g. "new_embodiment", "dos-w1")
+    norm_unnorm_key: str              # key inside dataset_statistics.json (= EmbodimentTag.value, e.g. "table30v2_dosw1")
     norm_mode: str = "min_max"        # "min_max" | "q99" — must match training transform
     state_layout: str = "model"       # "model" (no perm) | "raw_dosw1" (legacy: raw↔starvla perm)
 
@@ -83,7 +83,8 @@ ROBOT_SPECS: Dict[str, RobotSpec] = {
         post_action_type="leftpos",      # outgoing actions = ee_pose(7 quat)+gripper(1) = 8
         state_dim=7,
         action_dim=8,
-        norm_unnorm_key="new_embodiment",
+        norm_unnorm_key="table30v2_ur5",
+        norm_mode="q99",
     ),
     "arx5": RobotSpec(
         robot_tag="arx5",
@@ -92,7 +93,8 @@ ROBOT_SPECS: Dict[str, RobotSpec] = {
         post_action_type="leftpos",
         state_dim=7,
         action_dim=8,
-        norm_unnorm_key="new_embodiment",
+        norm_unnorm_key="table30v2_arx5",
+        norm_mode="q99",
     ),
     # DOSW1 is dual-arm 14-d. Verified against upstream cvpr branch:
     # MockRCRobotW1.ACTION_TYPES = ("joint","pos","leftjoint","leftpos","rightjoint","rightpos");
@@ -106,13 +108,10 @@ ROBOT_SPECS: Dict[str, RobotSpec] = {
         post_action_type="joint",
         state_dim=14,
         action_dim=14,
-        # Matches EmbodimentTag.DOS_W1.value used by data_config.py for new
-        # training runs. Older checkpoints with the legacy "dosw1" stats key
-        # still load via _load_norm_stats's single-key fallback.
-        norm_unnorm_key="dos-w1",
+        norm_unnorm_key="table30v2_dosw1",
         norm_mode="q99",
-        # state_layout left at default "model": this repo's data_config.py
-        # preserves raw [L_j×6, L_grip, R_j×6, R_grip] order in stats.
+        # state_layout left at default "model": data_config.py preserves raw
+        # [L_j×6, L_grip, R_j×6, R_grip] order in stats — no permutation needed.
     ),
 }
 

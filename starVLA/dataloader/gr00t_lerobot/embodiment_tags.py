@@ -52,34 +52,35 @@ class EmbodimentTag(Enum):
     The Franka Emika Panda robot.
     """
 
-    ALOHA = 'aloha'
-    """
-    The ALOHA bimanual robot (RoboChallenge dual-arm).
-    """
+    # RoboChallenge Table30v1 (V1).  No data_config emits these yet — reserved
+    # for when V1 lerobot conversion lands.  Schema/dims pending wire-up.
+    TABLE30V1_UR5 = "table30v1_ur5"
+    """RoboChallenge Table30v1 — UR5 single-arm."""
 
-    UR5 = 'ur5'
-    """ The UR5 single-arm robot.
-    """
+    TABLE30V1_ARX5 = "table30v1_arx5"
+    """RoboChallenge Table30v1 — ARX5 single-arm."""
 
-    ARX5 = 'arx5'
-    """ The ARX5 single-arm robot.
-    """
+    TABLE30V1_DOSW1 = "table30v1_dosw1"
+    """RoboChallenge Table30v1 — DOS-W1 dual-arm."""
 
-    DOS_W1 = 'dos-w1'
-    """ The DOS-W1 single-arm robot.
-    """
+    TABLE30V1_ALOHA = "table30v1_aloha"
+    """RoboChallenge Table30v1 — ALOHA dual-arm."""
 
-    TABLE30V2_DOSW1 = "table30v2_dosw1"
-    """Table30v2 RoboChallenge — DOS-W1 dual-arm (14d aloha-style)."""
-
-    TABLE30V2_ALOHA = "table30v2_aloha"
-    """Table30v2 RoboChallenge — ALOHA dual-arm (14d aloha-style)."""
+    # RoboChallenge Table30v2 (V2) — native dimensions:
+    #   UR5 / ARX5 single-arm: state 7d / action 8d (ee + gripper)
+    #   DOSW1 dual-arm:        state 14d / action 14d (joint targets)
+    #   ALOHA dual-arm:        state 14d / action 16d (ee + gripper × 2)
+    TABLE30V2_UR5 = "table30v2_ur5"
+    """RoboChallenge Table30v2 — UR5 single-arm (8d action, native)."""
 
     TABLE30V2_ARX5 = "table30v2_arx5"
-    """Table30v2 RoboChallenge — ARX5 single-arm (14d aloha-style padded)."""
+    """RoboChallenge Table30v2 — ARX5 single-arm (8d action, native)."""
 
-    TABLE30V2_UR5 = "table30v2_ur5"
-    """Table30v2 RoboChallenge — UR5 single-arm (14d aloha-style padded)."""
+    TABLE30V2_DOSW1 = "table30v2_dosw1"
+    """RoboChallenge Table30v2 — DOS-W1 dual-arm (14d action, native)."""
+
+    TABLE30V2_ALOHA = "table30v2_aloha"
+    """RoboChallenge Table30v2 — ALOHA dual-arm (16d action, native)."""
 
 # Embodiment tag string: to projector index in the Action Expert Module
 EMBODIMENT_TAG_MAPPING = {
@@ -90,14 +91,14 @@ EMBODIMENT_TAG_MAPPING = {
     EmbodimentTag.AGIBOT_GENIE1.value: 26,
     EmbodimentTag.GR1.value: 24,
     EmbodimentTag.FRANKA.value: 25,
-    EmbodimentTag.ALOHA.value: 7,
-    EmbodimentTag.UR5.value: 8,
-    EmbodimentTag.ARX5.value: 9,
-    EmbodimentTag.DOS_W1.value: 10,
-    EmbodimentTag.TABLE30V2_DOSW1.value: 27,
-    EmbodimentTag.TABLE30V2_ALOHA.value: 28,
-    EmbodimentTag.TABLE30V2_ARX5.value: 29,
-    EmbodimentTag.TABLE30V2_UR5.value: 30,
+    EmbodimentTag.TABLE30V1_UR5.value: 7,
+    EmbodimentTag.TABLE30V1_ARX5.value: 8,
+    EmbodimentTag.TABLE30V1_DOSW1.value: 9,
+    EmbodimentTag.TABLE30V1_ALOHA.value: 10,
+    EmbodimentTag.TABLE30V2_UR5.value: 27,
+    EmbodimentTag.TABLE30V2_ARX5.value: 28,
+    EmbodimentTag.TABLE30V2_DOSW1.value: 29,
+    EmbodimentTag.TABLE30V2_ALOHA.value: 30,
 }
 
 # Robot type to embodiment tag mapping

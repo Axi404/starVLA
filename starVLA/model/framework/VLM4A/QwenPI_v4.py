@@ -36,35 +36,37 @@ logger = initialize_overwatch(__name__)
 # All Table30v2 robots now use stride=4 in data_config, so fps=7.5 across the
 # board (camera 30 Hz / 4).
 ROBOT_LAYOUTS: Dict[str, Dict[str, Any]] = {
-    "robochallenge_ur5": {
+    # RoboChallenge Table30v2 (V2). Add a robochallenge_v1_* group below the
+    # legacy section if/when V1 data_config gets wired up.
+    "robochallenge_v2_ur5": {
         "action_dim": 8,
         "chunk_size": 50,
         "robo_info": "single arm, abs ee (7-dof quat + gripper)",
-        "display_tag": "RoboChallenge UR5",
+        "display_tag": "RoboChallenge Table30v2 UR5",
         "arm_type": "single arm",
         "fps": 7.5,
     },
-    "robochallenge_arx5": {
+    "robochallenge_v2_arx5": {
         "action_dim": 8,
         "chunk_size": 50,
         "robo_info": "single arm, abs ee (7-dof quat + gripper)",
-        "display_tag": "RoboChallenge ARX5",
+        "display_tag": "RoboChallenge Table30v2 ARX5",
         "arm_type": "single arm",
         "fps": 7.5,
     },
-    "robochallenge_dosw1": {
+    "robochallenge_v2_dosw1": {
         "action_dim": 14,
         "chunk_size": 50,
         "robo_info": "dual arms, abs joint (6-dof + gripper) × (left + right)",
-        "display_tag": "RoboChallenge DOS-W1",
+        "display_tag": "RoboChallenge Table30v2 DOS-W1",
         "arm_type": "dual arms",
         "fps": 7.5,
     },
-    "robochallenge_aloha": {
+    "robochallenge_v2_aloha": {
         "action_dim": 16,
         "chunk_size": 50,
         "robo_info": "bimanual, abs ee (7-dof quat + gripper) × (left + right)",
-        "display_tag": "RoboChallenge ALOHA",
+        "display_tag": "RoboChallenge Table30v2 ALOHA",
         "arm_type": "dual arms",
         "fps": 7.5,
     },
@@ -87,16 +89,13 @@ ROBOT_LAYOUTS: Dict[str, Dict[str, Any]] = {
 }
 
 # Maps the EmbodimentTag.value emitted by LeRobotSingleDataset._pack_sample
-# (sample["robot_tag"]) to a ROBOT_LAYOUTS key.
+# (sample["robot_tag"]) to a ROBOT_LAYOUTS key.  Add a "table30v1_*" group
+# when the V1 data_config / converter lands.
 EMBODIMENT_TAG_TO_LAYOUT_KEY: Dict[str, str] = {
-    "ur5":             "robochallenge_ur5",
-    "arx5":            "robochallenge_arx5",
-    "dos-w1":          "robochallenge_dosw1",
-    "aloha":           "robochallenge_aloha",
-    "table30v2_ur5":   "robochallenge_ur5",
-    "table30v2_arx5":  "robochallenge_arx5",
-    "table30v2_dosw1": "robochallenge_dosw1",
-    "table30v2_aloha": "robochallenge_aloha",
+    "table30v2_ur5":   "robochallenge_v2_ur5",
+    "table30v2_arx5":  "robochallenge_v2_arx5",
+    "table30v2_dosw1": "robochallenge_v2_dosw1",
+    "table30v2_aloha": "robochallenge_v2_aloha",
 }
 
 
