@@ -33,7 +33,8 @@ logger = initialize_overwatch(__name__)
 #
 # `fps` is the *effective* action sample rate seen by the model:
 #   fps = camera_fps / data_config action_indices stride
-# so dosw1 / aloha (stride=4) are 7.5, single-arm (stride=1) is 30.
+# All Table30v2 robots now use stride=4 in data_config, so fps=7.5 across the
+# board (camera 30 Hz / 4).
 ROBOT_LAYOUTS: Dict[str, Dict[str, Any]] = {
     "robochallenge_ur5": {
         "action_dim": 8,
@@ -41,7 +42,7 @@ ROBOT_LAYOUTS: Dict[str, Dict[str, Any]] = {
         "robo_info": "single arm, abs ee (7-dof quat + gripper)",
         "display_tag": "RoboChallenge UR5",
         "arm_type": "single arm",
-        "fps": 30.0,
+        "fps": 7.5,
     },
     "robochallenge_arx5": {
         "action_dim": 8,
@@ -49,7 +50,7 @@ ROBOT_LAYOUTS: Dict[str, Dict[str, Any]] = {
         "robo_info": "single arm, abs ee (7-dof quat + gripper)",
         "display_tag": "RoboChallenge ARX5",
         "arm_type": "single arm",
-        "fps": 30.0,
+        "fps": 7.5,
     },
     "robochallenge_dosw1": {
         "action_dim": 14,
