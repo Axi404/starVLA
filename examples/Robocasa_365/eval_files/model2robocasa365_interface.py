@@ -6,26 +6,13 @@ but adapted to the single-arm 12-d action / 16-d state layout produced by
 """
 
 from collections import deque
-from pathlib import Path
 from typing import Dict, Optional
 
 import cv2 as cv
-import json
 import numpy as np
 
 from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
 from examples.Robocasa_tabletop.eval_files.adaptive_ensemble import AdaptiveEnsembler
-
-
-def _load_norm_stats(checkpoint_path: str) -> dict:
-    """Load ``dataset_statistics.json`` next to the run directory (no starVLA import)."""
-    ckpt = Path(checkpoint_path)
-    run_dir = ckpt.parents[1]
-    stats_json = run_dir / "dataset_statistics.json"
-    if not stats_json.exists():
-        raise FileNotFoundError(f"Missing dataset_statistics.json beside {ckpt}")
-    with stats_json.open() as f:
-        return json.load(f)
 
 
 # Order MUST match the LeRobot dataset ``observation.state`` produced by
@@ -81,7 +68,8 @@ class PolicyWarper:
             else None
         )
 
-        self.action_norm_stats = self.get_action_stats(self.unnorm_key, policy_ckpt_path=policy_ckpt_path)
+        server_meta = self.client.get_server_metadata()
+        print(f"*** unnorm_key: {unnorm_key}, server_meta: {server_meta} ***")
 
     # ------------------------------------------------------------------
     # Inference
@@ -127,12 +115,10 @@ class PolicyWarper:
             "use_ddim": self.use_ddim,
             "num_ddim_steps": self.num_ddim_steps,
         }
+        vla_input["unnorm_key"] = self.unnorm_key
         response = self.client.predict_action(vla_input)
-        normalized_actions = response["data"]["normalized_actions"]  # (B, chunk, D)
-
-        raw_actions = self.unnormalize_actions(
-            normalized_actions=normalized_actions, action_norm_stats=self.action_norm_stats
-        )
+        # server already un-normalized via training-time transform
+        raw_actions = np.array(response["data"]["actions"])  # (B, chunk, D)
 
         if self.action_ensemble:
             ensembled = []
@@ -157,24 +143,4 @@ class PolicyWarper:
         """Match training-time StateActionSinCosTransform on the state."""
         return np.concatenate([np.sin(state), np.cos(state)], axis=-1)
 
-    @staticmethod
-    def unnormalize_actions(normalized_actions: np.ndarray, action_norm_stats: Dict[str, np.ndarray]) -> np.ndarray:
-        mask = action_norm_stats.get("mask", np.ones_like(action_norm_stats["min"], dtype=bool))
-        action_high = np.array(action_norm_stats["max"])
-        action_low = np.array(action_norm_stats["min"])
-        normalized_actions = np.clip(normalized_actions, -1, 1)
-        return np.where(
-            mask,
-            (normalized_actions + 1) / 2 * (action_high - action_low) + action_low,
-            normalized_actions,
-        )
 
-    @staticmethod
-    def get_action_stats(unnorm_key: Optional[str], policy_ckpt_path) -> dict:
-        norm_stats = _load_norm_stats(policy_ckpt_path)
-        if unnorm_key is None:
-            assert len(norm_stats) == 1, (
-                f"Multiple datasets in stats — pass --unnorm_key from {list(norm_stats.keys())}"
-            )
-            unnorm_key = next(iter(norm_stats.keys()))
-        return norm_stats[unnorm_key]["action"]

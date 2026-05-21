@@ -12,6 +12,9 @@
 # ==============================================================================
 set -uo pipefail
 
+
+DIR_GLOB=0430*
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../../../.." && pwd)"
 

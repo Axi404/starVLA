@@ -33,7 +33,7 @@ from transformers import AutoProcessor, get_scheduler
 from starVLA.dataloader import build_dataloader
 from starVLA.model.framework.base_framework import build_framework
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
-from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, normalize_dotlist_args
+from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, setup_optimizer_and_scheduler, normalize_dotlist_args
 
 deepspeed_plugin = DeepSpeedPlugin()
 accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
@@ -70,32 +70,6 @@ def prepare_data(cfg, accelerator, output_dir) -> DataLoader:
     accelerator.dataloader_config.dispatch_batches = False
     dist.barrier()
     return vlm_train_dataloader
-
-
-def setup_optimizer_and_scheduler(model, cfg) -> Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
-    """Set optimizer and learning rate scheduler."""
-    param_groups = build_param_lr_groups(model=model, cfg=cfg)
-    optimizer = torch.optim.AdamW(
-        param_groups,
-        lr=cfg.trainer.learning_rate.base,
-        betas=tuple(cfg.trainer.optimizer.betas),
-        weight_decay=cfg.trainer.optimizer.weight_decay,
-        eps=cfg.trainer.optimizer.eps,
-    )
-
-    if dist.is_initialized() and dist.get_rank() == 0:
-        for group in optimizer.param_groups:
-            logger.info(f"LR Group {group['name']}: lr={group['lr']}, num_params={len(group['params'])}")
-
-    lr_scheduler = get_scheduler(
-        name=cfg.trainer.lr_scheduler_type,
-        optimizer=optimizer,
-        num_warmup_steps=cfg.trainer.num_warmup_steps,
-        num_training_steps=cfg.trainer.max_train_steps,
-        scheduler_specific_kwargs=cfg.trainer.scheduler_specific_kwargs,
-    )
-
-    return optimizer, lr_scheduler
 
 
 class VLAMTrainer(TrainerUtils):
@@ -224,7 +198,10 @@ class VLAMTrainer(TrainerUtils):
     def _log_metrics(self, metrics):
         """Record training metrics."""
         if self.completed_steps % self.config.trainer.logging_frequency == 0 and dist.get_rank() == 0:
-            metrics["learning_rate"] = self.lr_scheduler.get_last_lr()[0]
+            last_lrs = self.lr_scheduler.get_last_lr()
+            for i, group in enumerate(self.optimizer.param_groups):
+                group_name = group.get("name", str(i))
+                metrics[f"learning_rate/{group_name}"] = last_lrs[i] if i < len(last_lrs) else last_lrs[-1]
             if hasattr(self.vlm_train_dataloader, "__len__"):
                 dataloader_length = len(self.vlm_train_dataloader)
                 if dataloader_length:
@@ -251,7 +228,9 @@ class VLAMTrainer(TrainerUtils):
         self._log_training_config()
         self._create_data_iterators()
         progress_bar = tqdm(
-            range(self.config.trainer.max_train_steps), disable=not self.accelerator.is_local_main_process
+            total=self.config.trainer.max_train_steps,
+            initial=self.completed_steps,
+            disable=not self.accelerator.is_local_main_process,
         )
 
         while self.completed_steps < self.config.trainer.max_train_steps:
@@ -305,7 +284,10 @@ class VLAMTrainer(TrainerUtils):
                 self.accelerator.clip_grad_norm_(self.model.parameters(), self.config.trainer.gradient_clipping)
 
             self.optimizer.step()
-            self.lr_scheduler.step()
+            # Only step the LR scheduler when gradients are actually synced.
+            # See train_starvla.py for full explanation.
+            if self.accelerator.sync_gradients:
+                self.lr_scheduler.step()
             log_dict["vlm_loss"] = vlm_loss.item()
 
         return log_dict

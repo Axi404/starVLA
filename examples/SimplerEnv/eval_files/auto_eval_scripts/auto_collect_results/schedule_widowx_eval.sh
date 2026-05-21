@@ -16,22 +16,25 @@
 # ==============================================================================
 set -uo pipefail
 
+DIR_GLOB=
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../../../.." && pwd)"
 
 # Parent directory holding all training experiments.
 ROOT_BASE="${ROOT_BASE:-$PROJECT_ROOT/results/Checkpoints}"
-
+ 
 # Experiment directory pattern (relative to ROOT_BASE). First positional arg
 # overrides the default; can also be set via env var DIR_GLOB.
 DIR_GLOB="${1:-${DIR_GLOB:-0427_oxe_bridge_rt_1_QwenPI_v3}}"
 
 # srun partition / gpus
 SLURM_PARTITION="${SLURM_PARTITION:-si}"
-SLURM_GRES="${SLURM_GRES:-gpu:4}"
+SLURM_GRES="${SLURM_GRES:-gpu:8}"
 
 # Bridge eval entry-point.
-SCRIPT_PATH="${SCRIPT_PATH:-$PROJECT_ROOT/examples/SimplerEnv/eval_files/auto_eval_scripts/star_bridge.sh}"
+# SCRIPT_PATH="${SCRIPT_PATH:-$PROJECT_ROOT/examples/SimplerEnv/eval_files/auto_eval_scripts/star_bridge.sh}"
+
+SCRIPT_PATH="$PROJECT_ROOT/examples/SimplerEnv/eval_files/auto_eval_scripts/bar/star_bridge.sh"
 
 # Expected result-log filename suffixes (without the steps_${step}_ prefix).
 LOG_SUFFIXES=(

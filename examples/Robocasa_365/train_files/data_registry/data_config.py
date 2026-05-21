@@ -23,6 +23,7 @@ from starVLA.dataloader.gr00t_lerobot.embodiment_tags import EmbodimentTag
 class PandaOmronRoboCasa365DataConfig:
     """Single-arm Franka PandaOmron used by upstream RoboCasa365."""
 
+    embodiment_tag = EmbodimentTag.NEW_EMBODIMENT
     video_keys = [
         "video.robot0_agentview_left",
         "video.robot0_agentview_right",
@@ -41,6 +42,23 @@ class PandaOmronRoboCasa365DataConfig:
         "action.base_motion",
         "action.control_mode",
     ]
+    # Per-key dims for PolicyNormProcessor
+    # action (12-D): eef_pos(3) + eef_rot(3) + gripper_close(1) + base_motion(4) + control_mode(1)
+    action_key_dims = {
+        "action.end_effector_position": 3,
+        "action.end_effector_rotation": 3,
+        "action.gripper_close": 1,
+        "action.base_motion": 4,
+        "action.control_mode": 1,
+    }
+    # state (16-D): base_position(3) + base_rotation(4) + eef_pos_rel(3) + eef_rot_rel(4) + gripper_qpos(2)
+    state_key_dims = {
+        "state.base_position": 3,
+        "state.base_rotation": 4,
+        "state.end_effector_position_relative": 3,
+        "state.end_effector_rotation_relative": 4,
+        "state.gripper_qpos": 2,
+    }
     language_keys = ["annotation.human.task_description"]
 
     observation_indices = [0]
@@ -71,8 +89,9 @@ ROBOT_TYPE_CONFIG_MAP = {
 }
 
 ROBOT_TYPE_TO_EMBODIMENT_TAG = {
-    # Use NEW_EMBODIMENT since PandaOmron is not in the canonical EmbodimentTag enum
-    "panda_omron_robocasa365": EmbodimentTag.NEW_EMBODIMENT,
+    # Per Proposal A, embodiment_tag now lives as a classvar on each DataConfig.
+    # The registry derives ROBOT_TYPE_TO_EMBODIMENT_TAG automatically. Kept as
+    # an empty dict for backward compat (it is honored as legacy override).
 }
 
 # Each task lives at
