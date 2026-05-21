@@ -161,52 +161,56 @@ def _normalize_action_mode_state_map(action_mode_state_map: dict[str, str] | Non
 
 def _build_stats_cache_config(
     action_mode: str,
+    action_indices: list[int] | None,
+    state_indices: list[int] | None,
+    action_keys_full: list[str],
+    state_keys_full: list[str],
+    action_mode_apply_keys: list[str] | None,
+    action_mode_state_map: dict[str, str] | None,
 ) -> dict:
     return {
         "mode": action_mode,
+        "action_indices": list(action_indices) if action_indices is not None else None,
+        "state_indices": list(state_indices) if state_indices is not None else None,
+        # action_keys / state_keys order defines column ordering — preserve as-is.
+        "action_keys": list(action_keys_full),
+        "state_keys": list(state_keys_full),
+        "apply_keys": list(action_mode_apply_keys) if action_mode_apply_keys else [],
+        "state_map": dict(sorted((action_mode_state_map or {}).items())),
+        "format_version": LE_ROBOT_STATS_FORMAT_VERSION,
     }
 
 
-def _invalidate_legacy_stats_cache(stats_path: Path, reason: str) -> None:
-    if not stats_path.exists():
-        return
-    print(f"Removing stale dataset statistics cache at {stats_path}: {reason}")
-    stats_path.unlink()
+def _stats_cache_hash(cache_config: dict) -> str:
+    payload = json.dumps(cache_config, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
 
 
-def _load_stats_cache(
-    stats_path: Path,
-    expected_config: dict,
-    *,
-    invalidate_legacy: bool,
-) -> dict | None:
+def _stats_cache_path(dataset_path: Path, cache_hash: str) -> Path:
+    template = Path(LE_ROBOT_STATS_FILENAME)
+    return dataset_path / template.parent / f"{template.stem}_{cache_hash}{template.suffix}"
+
+
+def _load_stats_cache(stats_path: Path, expected_config: dict) -> dict | None:
     if not stats_path.exists():
         return None
 
     try:
         with open(stats_path, "r") as f:
             payload = json.load(f)
-    except Exception as exc:
-        if invalidate_legacy:
-            _invalidate_legacy_stats_cache(stats_path, f"failed to load JSON ({exc})")
+    except Exception:
         return None
 
     if not isinstance(payload, dict):
-        if invalidate_legacy:
-            _invalidate_legacy_stats_cache(stats_path, "unexpected top-level format")
         return None
 
     format_version = payload.get("__format_version")
     cache_config = payload.get("__cache_config")
     statistics = payload.get("statistics")
     if format_version != LE_ROBOT_STATS_FORMAT_VERSION or cache_config is None or statistics is None:
-        if invalidate_legacy:
-            _invalidate_legacy_stats_cache(stats_path, "legacy statistics format detected")
         return None
 
     if cache_config != expected_config:
-        if invalidate_legacy:
-            _invalidate_legacy_stats_cache(stats_path, "statistics config mismatch, rebuilding cache")
         return None
 
     return statistics
@@ -292,11 +296,7 @@ def _load_or_compute_statistics(
     action_mode_apply_keys: list[str] | None,
     action_mode_state_map: dict[str, str] | None,
 ) -> dict:
-    le_statistics = _load_stats_cache(
-        stats_path,
-        stats_cache_config,
-        invalidate_legacy=True,
-    )
+    le_statistics = _load_stats_cache(stats_path, stats_cache_config)
     if le_statistics is not None:
         return le_statistics
 
@@ -812,7 +812,6 @@ class LeRobotSingleDataset(Dataset):
         
         action_mode = _normalize_action_mode(self.data_cfg.get("action_mode", "abs") if self.data_cfg else "abs")
 
-        stats_path = self.dataset_path / LE_ROBOT_STATS_FILENAME
         action_cfg = self.modality_configs.get("action")
         state_cfg = self.modality_configs.get("state")
         action_keys_full = list(action_cfg.modality_keys) if action_cfg else []
@@ -829,7 +828,14 @@ class LeRobotSingleDataset(Dataset):
         )
         stats_cache_config = _build_stats_cache_config(
             action_mode=action_mode,
+            action_indices=action_indices,
+            state_indices=state_indices,
+            action_keys_full=action_keys_full,
+            state_keys_full=state_keys_full,
+            action_mode_apply_keys=apply_keys,
+            action_mode_state_map=normalized_state_map,
         )
+        stats_path = _stats_cache_path(self.dataset_path, _stats_cache_hash(stats_cache_config))
         parquet_files = list(self.dataset_path.glob(LE_ROBOT_DATA_FILENAME))
         parquet_files_filtered = [
             pf for pf in parquet_files if "episode_033675.parquet" not in pf.name
@@ -857,11 +863,7 @@ class LeRobotSingleDataset(Dataset):
             dist.barrier()
 
         if le_statistics is None:
-            le_statistics = _load_stats_cache(
-                stats_path,
-                stats_cache_config,
-                invalidate_legacy=False,
-            )
+            le_statistics = _load_stats_cache(stats_path, stats_cache_config)
             if le_statistics is None:
                 raise RuntimeError(
                     f"Dataset statistics cache is missing or invalid after sync: {stats_path}"
