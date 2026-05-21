@@ -8,6 +8,8 @@ The evaluation process consists of two main parts:
 
 We have verified that this workflow runs successfully on both **NVIDIA A100** and **RTX 4090** GPUs.  
 
+> 💡 **AMD GPU Support:** Community members have verified that starVLA also works on **AMD Instinct MI300X** GPUs with ROCm 6.4 — with zero source code changes. The only modification needed is setting `--framework.qwenvl.attn_implementation sdpa`. For a detailed setup guide and benchmark results, see [Issue #254](https://github.com/starVLA/starVLA/issues/254).
+
 ---
 
 
@@ -50,7 +52,7 @@ Afterwards, inside the `LIBERO` environment, install the following dependencies:
 
 ```bash
 pip install tyro matplotlib mediapy websockets msgpack
-pip install numpy==1.24.4
+pip install numpy==1.24.4 mujoco==3.2.3
 ```
 
 ---
@@ -122,4 +124,3 @@ Please run the following command to start training:
 bash examples/LIBERO/train_files/run_libero_train.sh
 ```
 ⚠️ **Note:** Please ensure that you specify the correct path in `examples/LIBERO/train_files/run_libero_train.sh`
-

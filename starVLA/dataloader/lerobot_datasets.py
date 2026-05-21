@@ -9,9 +9,12 @@ from typing import Sequence
 from omegaconf import OmegaConf
 
 from starVLA.dataloader.gr00t_lerobot.datasets import LeRobotSingleDataset, LeRobotMixtureDataset
-from starVLA.dataloader.gr00t_lerobot.mixtures import DATASET_NAMED_MIXTURES
-from starVLA.dataloader.gr00t_lerobot.data_config import ROBOT_TYPE_CONFIG_MAP
-from starVLA.dataloader.gr00t_lerobot.embodiment_tags import ROBOT_TYPE_TO_EMBODIMENT_TAG, EmbodimentTag
+from starVLA.dataloader.gr00t_lerobot.registry import (
+    ROBOT_TYPE_CONFIG_MAP,
+    ROBOT_TYPE_TO_EMBODIMENT_TAG,
+    DATASET_NAMED_MIXTURES,
+    EmbodimentTag,
+)
 
 def collate_fn(batch):
     return batch
@@ -22,7 +25,6 @@ def make_LeRobotSingleDataset(
     robot_type: str,
     delete_pause_frame: bool = False,
     data_cfg: dict | None = None,
-    lerobot_version: str | None = None,
 ) -> LeRobotSingleDataset:
     """
     Make a LeRobotSingleDataset object.
@@ -30,7 +32,7 @@ def make_LeRobotSingleDataset(
     :param data_root_dir: The root directory of the dataset.
     :param data_name: The name of the dataset.
     :param robot_type: The robot type config to use.
-    :param lerobot_version: Explicit lerobot version override ("v2.0" or "v3.0"). If None, auto-detected from dataset file structure.
+    :param crop_obs_camera: Whether to crop the observation camera images.
     :return: A LeRobotSingleDataset object.
     """
     
@@ -53,7 +55,6 @@ def make_LeRobotSingleDataset(
         video_backend=video_backend, # decord is more efficiency | torchvision_av for video.av1
         delete_pause_frame=delete_pause_frame,
         data_cfg=data_cfg,
-        lerobot_version=lerobot_version,
     )
 
 def get_vla_dataset(
@@ -72,21 +73,18 @@ def get_vla_dataset(
     delete_pause_frame = data_cfg.get("delete_pause_frame", False)
     mixture_spec = DATASET_NAMED_MIXTURES[data_mix]
     included_datasets, filtered_mixture_spec = set(), []
-    for entry in mixture_spec:
-        # Support both 3-tuple (name, weight, robot_type) and 4-tuple (name, weight, robot_type, lerobot_version)
-        d_name, d_weight, robot_type = entry[0], entry[1], entry[2]
-        d_version = entry[3] if len(entry) > 3 else None
-        dataset_key = (d_name, robot_type)
+    for d_name, d_weight, robot_type in mixture_spec:  
+        dataset_key = (d_name, robot_type)  
         if dataset_key in included_datasets:
             print(f"Skipping Duplicate Dataset: `{(d_name, d_weight, robot_type)}`")
             continue
 
         included_datasets.add(dataset_key)
-        filtered_mixture_spec.append((d_name, d_weight, robot_type, d_version))
+        filtered_mixture_spec.append((d_name, d_weight, robot_type))
 
     dataset_mixture = []
-    for d_name, d_weight, robot_type, d_version in filtered_mixture_spec:
-        dataset_mixture.append((make_LeRobotSingleDataset(Path(data_root_dir), d_name, robot_type, delete_pause_frame=delete_pause_frame, data_cfg=data_cfg, lerobot_version=d_version), d_weight))
+    for d_name, d_weight, robot_type in filtered_mixture_spec:
+        dataset_mixture.append((make_LeRobotSingleDataset(Path(data_root_dir), d_name, robot_type, delete_pause_frame=delete_pause_frame, data_cfg=data_cfg), d_weight))
 
     return LeRobotMixtureDataset(
         dataset_mixture,
@@ -101,27 +99,25 @@ def get_vla_dataset(
 
 
 if __name__ == "__main__":
-
-    # import debugpy
     import argparse
+    import os
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config_yaml", type=str, default="./starVLA/config/training/starvla_cotrain_behavior.yaml", help="Path to YAML config")
+    parser.add_argument("--config_yaml", type=str, default="examples/LIBERO/train_files/starvla_cotrain_libero.yaml", help="Path to YAML config")
     args, clipargs = parser.parse_known_args()
 
-    # debugpy.listen(("0.0.0.0", 10092))
-    # print("🔍 Rank 0 waiting for debugger attach on port 10092...")
-    # debugpy.wait_for_client()
-    args.config_yaml = "./examples/MultiRobot/train_files/starvla_cotrain_multiRobot.yaml"
+    if os.getenv("DEBUGPY_ENABLE", "0") == "1":
+        import debugpy
+        debugpy.listen(("0.0.0.0", 10092))
+        print("Rank 0 waiting for debugger attach on port 10092...")
+        debugpy.wait_for_client()
+
     cfg = OmegaConf.load(args.config_yaml)
-    # cfg.datasets.vla_data.data_mix = "robotwin"
     vla_dataset_cfg = cfg.datasets.vla_data
-    # cfg.datasets.vla_data.include_state = True
-    vla_dataset_cfg.task_id = 1
     for task_id in ["all"]:
         vla_dataset_cfg.task_id = task_id
         print(f"Testing Task ID: {task_id}")
         dataset = get_vla_dataset(data_cfg=vla_dataset_cfg)
-        # dataset
     from torch.utils.data import DataLoader
     train_dataloader = DataLoader(
         dataset,
@@ -137,8 +133,6 @@ if __name__ == "__main__":
     from tqdm import tqdm
     count = 0
     for batch in tqdm(train_dataloader, desc="Processing Batches"):
-        # print(batch)
-        # print(1)
         if count > 100:
             break
         count += 1

@@ -31,7 +31,7 @@ from transformers import AutoProcessor, get_scheduler
 
 # Local Modules
 from starVLA.dataloader import build_dataloader
-from starVLA.model.framework import build_framework
+from starVLA.model.framework.base_framework import build_framework
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, normalize_dotlist_args
 
@@ -115,6 +115,10 @@ class VLAMTrainer(TrainerUtils):
         seed = self.config.seed + rank if hasattr(self.config, "seed") else rank + 3047
         set_seed(seed)
 
+        # Save config snapshots upfront so a later setup-step crash still
+        # leaves a from_pretrained-able run dir behind.
+        self._save_initial_configs()
+
         if hasattr(self.config.trainer, "pretrained_checkpoint") and self.config.trainer.pretrained_checkpoint:
             pretrained_checkpoint = self.config.trainer.pretrained_checkpoint
             reload_modules = (
@@ -135,6 +139,27 @@ class VLAMTrainer(TrainerUtils):
 
         self._init_wandb()
         self._init_checkpointing()
+
+    def _save_initial_configs(self):
+        """Save full config and training script at the very start of training."""
+        if not self.accelerator.is_main_process:
+            return
+
+        output_dir = Path(self.config.output_dir)
+
+        # 1. Save config.full.yaml — the complete merged config (all parameters)
+        if isinstance(self.config, AccessTrackedConfig):
+            full_cfg = self.config.unwrap()
+        else:
+            full_cfg = self.config
+        full_yaml_path = output_dir / "config.full.yaml"
+        OmegaConf.save(full_cfg, full_yaml_path, resolve=True)
+        logger.info(f"\U0001f4dd Full config saved at {full_yaml_path}")
+
+        # 2. Save config.yaml — accessed-only snapshot (will be updated at checkpoints)
+        if isinstance(self.config, AccessTrackedConfig):
+            self.config.save_accessed_config(output_dir / "config.yaml", use_original_values=False)
+            logger.info(f"\U0001f4ca Accessed config snapshot saved at {output_dir / 'config.yaml'}")
 
     def _calculate_total_batch_size(self):
         """Calculate global batch size."""
@@ -262,7 +287,7 @@ class VLAMTrainer(TrainerUtils):
             logger.info("***** Training Configuration *****")
             logger.info(f"  Total optimization steps = {self.config.trainer.max_train_steps}")
             logger.info(f"  Per device batch size = {per_device_bs}")
-            logger.info(f"  Gradient accumulation steps = {self.config.trainer.gradient_accumulation_steps}")
+            logger.info(f"  Gradient accumulation steps = {self.accelerator.gradient_accumulation_steps}")
             logger.info(f"  Total batch size = {self.total_batch_size}")
 
     def _train_step(self, batch_vlm):
@@ -271,7 +296,8 @@ class VLAMTrainer(TrainerUtils):
         with self.accelerator.accumulate(self.model):
             self.optimizer.zero_grad()
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                vlm_output = self.model.qwen_vl_interface(**batch_vlm)
+                unwrapped = self.accelerator.unwrap_model(self.model)
+                vlm_output = unwrapped.qwen_vl_interface(**batch_vlm)
                 vlm_loss = vlm_output.loss * self.config.trainer.loss_scale.vlm
             self.accelerator.backward(vlm_loss)
 
@@ -340,7 +366,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config_yaml",
         type=str,
-        default="starVLA/config/training/starvla_cotrain_oxe.yaml",
+        default="examples/SimplerEnv/train_files/starvla_cotrain_oxe.yaml",
         help="Path to YAML config",
     )
     args, clipargs = parser.parse_known_args()
@@ -349,6 +375,9 @@ if __name__ == "__main__":
     dotlist = normalize_dotlist_args(clipargs)
     cli_cfg = OmegaConf.from_dotlist(dotlist)
     cfg = OmegaConf.merge(cfg, cli_cfg)
+
+    # Store source config path for later copying to output dir
+    cfg.config_yaml = args.config_yaml
 
     if cfg.is_debug and dist.is_initialized() and dist.get_rank() == 0:
         import debugpy

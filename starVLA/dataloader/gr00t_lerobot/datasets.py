@@ -25,6 +25,7 @@ See `scripts/load_dataset.py` for examples on how to use these datasets.
 """
 import os
 import hashlib
+import io
 import json, torch
 import copy
 from collections import defaultdict
@@ -71,23 +72,6 @@ LE_ROBOT3_TASKS_FILENAME = "meta/tasks.parquet"
 LE_ROBOT3_EPISODE_FILENAME = "meta/episodes/*/*.parquet"
 
 
-def detect_lerobot_version(dataset_path: Path) -> str | None:
-    """Auto-detect LeRobot dataset version from file structure.
-
-    Checks for version-specific marker files:
-    - v3.0: meta/tasks.parquet (checked first as the newer format)
-    - v2.0: meta/episodes.jsonl
-
-    Returns:
-        "v3.0", "v2.0", or None if version cannot be determined.
-    """
-    if (Path(dataset_path) / LE_ROBOT3_TASKS_FILENAME).exists():
-        return "v3.0"
-    if (Path(dataset_path) / LE_ROBOT_EPISODE_FILENAME).exists():
-        return "v2.0"
-    return None
-
-
 def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
     """Calculate the dataset statistics of all columns for a list of parquet files."""
     # Dataset statistics
@@ -111,7 +95,6 @@ def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
         if "task_info" in le_modality:
             continue
         print(f"Computing statistics for {le_modality}...")
-        # 检查数据是否为空或无效
         try:
             np_data = np.vstack(
                 [np.asarray(x, dtype=np.float32) for x in all_low_dim_data[le_modality]]
@@ -132,7 +115,8 @@ def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
 
 
 def _normalize_action_mode(mode: str) -> str:
-    """Normalize action mode names to {abs, delta, rel}."""
+    """Normalize action mode names to {abs, delta, rel}.""" 
+    # @gaoning plz move this, we want dataloader to be independent of the action mode logic, we can move this to transform or a separate utils tool to handle lerobot dataset
     mode = str(mode).lower()
     if mode in {"absolute", "raw"}:
         mode = "abs"
@@ -585,7 +569,6 @@ class LeRobotSingleDataset(Dataset):
         transforms: ComposedModalityTransform | None = None,
         delete_pause_frame: bool = False,
         data_cfg = None,
-        lerobot_version: str | None = None,
         **kwargs,
     ):
         """
@@ -604,16 +587,8 @@ class LeRobotSingleDataset(Dataset):
         self.data_cfg = data_cfg
         if not Path(dataset_path).exists():
             raise FileNotFoundError(f"Dataset path {dataset_path} does not exist")
-        # Determine lerobot version: explicit override > auto-detect > data_cfg fallback > default
-        if lerobot_version is not None:
-            self._lerobot_version = lerobot_version
-        else:
-            detected = detect_lerobot_version(Path(dataset_path))
-            if detected is not None:
-                self._lerobot_version = detected
-            else:
-                self._lerobot_version = self.data_cfg.get("lerobot_version", "v2.0") if self.data_cfg else "v2.0"
-        print(f"[LeRobot] Dataset {Path(dataset_path).name}: using version {self._lerobot_version}")
+        # indict letobot version
+        self._lerobot_version =  self.data_cfg.get("lerobot_version", "v2.0") #self._indict_lerobot_version(**kwargs)
 
         self._action_mode = None
         self._action_mode_state_map = {}
@@ -809,9 +784,13 @@ class LeRobotSingleDataset(Dataset):
                 channels = le_video_meta["shape"][le_video_meta["names"].index("channel")]
                 fps = le_video_meta["video_info"]["video.fps"]
             except (ValueError, KeyError):
-                # channels = le_video_meta["shape"][le_video_meta["names"].index("channels")]
-                channels = le_video_meta["info"]["video.channels"]
-                fps = le_video_meta["info"]["video.fps"]
+                try:
+                    channels = le_video_meta["info"]["video.channels"]
+                    fps = le_video_meta["info"]["video.fps"]
+                except (ValueError, KeyError):
+                    # Fallback for image-only datasets (e.g. VLA-Arena) that lack video_info
+                    channels = 3
+                    fps = le_info.get("fps", 30)
             simplified_modality_meta["video"][new_key] = {
                 "resolution": [width, height],
                 "channels": channels,
@@ -952,16 +931,36 @@ class LeRobotSingleDataset(Dataset):
                         video_key = str(col)[len("videos/") : -len("/from_timestamp")]
                         from_timestamps[video_key] = float(value)
 
-                    # TODO auto map key? just map to file_path and file_from_index
+                    # TODO auto map key 
+                    # Collect video file indices for each video key
+                    #已修改的lerobotv3.0的视频索引（提取视频和文件的索引）
+                    video_file_indices = {}
+                    for col in timestamp_cols:
+                        video_key = str(col)[len("videos/") : -len("/from_timestamp")]
+                        chunk_col = f"videos/{video_key}/chunk_index"
+                        file_col = f"videos/{video_key}/file_index"
+                        if chunk_col in episode and file_col in episode:
+                            video_file_indices[video_key] = {
+                                "chunk_index": int(episode[chunk_col]),
+                                "file_index": int(episode[file_col]),
+                            }
+                    print(video_file_indices)
                     episode_meta = {
                         "data/chunk_index": episode["data/chunk_index"],
                         "data/file_index": episode["data/file_index"],
                         "data/file_from_index": index,
                         "videos/from_timestamps": from_timestamps,
+                        "videos/file_indices": video_file_indices,
                     }
+                    # episode_meta = {
+                    #     "data/chunk_index": episode["data/chunk_index"],
+                    #     "data/file_index": episode["data/file_index"],
+                    #     "data/file_from_index": index,
+                    #     "videos/from_timestamps": from_timestamps,
+                    # }
                     self.trajectory_ids_to_metadata[trajectory_ids[-1]] = episode_meta
 
-            # 这里应该可以直接读取到 save index 信息
+            # Should be able to directly read the saved index info here
             return np.array(trajectory_ids), np.array(trajectory_lengths)
 
     def _get_all_steps(self) -> list[tuple[int, int]]:
@@ -1027,7 +1026,6 @@ class LeRobotSingleDataset(Dataset):
         config_dict = {
             "delete_pause_frame": self.delete_pause_frame,
             "dataset_name": self.dataset_name,
-            "lerobot_version": self._lerobot_version,
         }
         # Create a hash of the configuration
         config_str = str(sorted(config_dict.items()))
@@ -1311,9 +1309,9 @@ class LeRobotSingleDataset(Dataset):
         elif self._lerobot_version == "v3.0":
             tasks_path = self.dataset_path / LE_ROBOT3_TASKS_FILENAME
             df = pd.read_parquet(tasks_path)
-            df = df.reset_index()  # 把索引变成一列，列名通常为 'index'
-            df = df.rename(columns={'index': 'task'})  # 把 'index' 列重命名为 'task'
-            df = df[['task_index', 'task']]  # 调整列顺序
+            df = df.reset_index()  # convert index to a column, typically named 'index'
+            df = df.rename(columns={'index': 'task'})  # rename 'index' column to 'task'
+            df = df[['task_index', 'task']]  # reorder columns
             return df
     def _check_integrity(self):
         """Use the config to check if the keys are valid and detect silent data corruption."""
@@ -1372,16 +1370,11 @@ class LeRobotSingleDataset(Dataset):
 
     def _pack_sample(self, data: dict) -> dict:
         """Pack transformed modality data into training sample format."""
-        prim_images = []
-        wrist_views = []
+        step_images = []
         for video_key in self.modality_keys["video"]:
             image = data[video_key][0]
             image = Image.fromarray(image).resize((224, 224))
-            if "wrist" not in video_key:
-                prim_images.append(image)
-            else:
-                wrist_views.append(image)
-        all_images = prim_images + wrist_views
+            step_images.append(image)
 
         language = data[self.modality_keys["language"][0]][0]
         action = []
@@ -1391,9 +1384,9 @@ class LeRobotSingleDataset(Dataset):
 
         sample = {
             "action": action,
-            "image": all_images,
+            "image": step_images,
             "lang": language,
-            "language": language,
+            "robot_tag": self.tag
         }
 
         if self.data_cfg is not None and self.data_cfg.get("include_state", False) not in ["False", False]:
@@ -1569,6 +1562,16 @@ class LeRobotSingleDataset(Dataset):
             )
         elif self._lerobot_version == "v3.0":
             episode_meta = self.trajectory_ids_to_metadata[trajectory_id]
+
+            video_file_indices = episode_meta.get("videos/file_indices", {})
+            # print(f"{video_file_indices=}")
+            #已修改的lerobotv3.0的视频索引
+            if original_key in video_file_indices:
+                video_chunk_index = video_file_indices[original_key]["chunk_index"]
+                video_file_index = video_file_indices[original_key]["file_index"]
+            else:
+                video_chunk_index = episode_meta["data/chunk_index"]
+                video_file_index = episode_meta["data/file_index"]
             video_filename = self.video_path_pattern.format(
                 video_key=original_key,
                 chunk_index=episode_meta["data/chunk_index"],
@@ -1605,6 +1608,43 @@ class LeRobotSingleDataset(Dataset):
         assert key.startswith("video."), f"Video key must start with 'video.', got {key}"
         # Get the sub-key
         key = key.replace("video.", "")
+
+        # Image-only LeRobot datasets (e.g. VLA-Arena) may store frames directly
+        # in parquet columns and have total_videos == 0 (no mp4 files). In this
+        # case, load frames from the original image column and pad by step indices.
+        original_key = self.lerobot_modality_meta.video[key].original_key
+        if original_key is None:
+            original_key = key
+        if self.curr_traj_data is not None and original_key in self.curr_traj_data.columns:
+            image_entries = self.curr_traj_data[original_key].tolist()
+
+            def _decode_image_entry(entry):
+                if isinstance(entry, np.ndarray):
+                    return entry
+                if isinstance(entry, Image.Image):
+                    return np.array(entry)
+                if isinstance(entry, dict):
+                    img_bytes = entry.get("bytes", None)
+                    img_path = entry.get("path", None)
+
+                    if img_bytes is not None:
+                        return np.array(Image.open(io.BytesIO(img_bytes)).convert("RGB"))
+
+                    if img_path is not None:
+                        path_obj = Path(img_path)
+                        if not path_obj.is_absolute():
+                            path_obj = self.dataset_path / path_obj
+                        return np.array(Image.open(path_obj).convert("RGB"))
+
+                raise TypeError(f"Unsupported image entry type: {type(entry)}")
+
+            frames = []
+            for idx in step_indices:
+                safe_idx = int(min(max(idx, 0), len(image_entries) - 1))
+                frames.append(_decode_image_entry(image_entries[safe_idx]))
+
+            return np.stack(frames)
+
         video_path = self.get_video_path(trajectory_id, key)
         # Get the action/state timestamps for each frame in the video
         assert self.curr_traj_data is not None, f"No data found for {trajectory_id=}"
@@ -2126,7 +2166,7 @@ class LeRobotMixtureDataset(Dataset):
         # 1. Dataset lengths
         self._dataset_lengths = np.array([len(dataset) for dataset in self.datasets])
         print(f"Dataset lengths: {self._dataset_lengths}")
-
+        self._getitem_count = 0
         # 2. Dataset sampling weights
         self._dataset_sampling_weights = np.array(dataset_sampling_weights)
         
@@ -2190,7 +2230,7 @@ class LeRobotMixtureDataset(Dataset):
         # Set the epoch and sample the first epoch
         self.set_epoch(0)
 
-        self._sequential_step_sampling = False
+        self._sequential_step_sampling = True
         if self.data_cfg is not None:
             seq_cfg = self.data_cfg.get("sequential_step_sampling", True)
             self._sequential_step_sampling = seq_cfg not in ["False", False]
@@ -2259,36 +2299,16 @@ class LeRobotMixtureDataset(Dataset):
         dataset = self.datasets[dataset_index]
 
         # Sample trajectory
-        # trajectory_index = rng.choice(
-        #     len(dataset.trajectory_ids), p=self.trajectory_sampling_weights[dataset_index]
-        # )
-        # trajectory_id = dataset.trajectory_ids[trajectory_index]
+        trajectory_index = rng.choice(
+            len(dataset.trajectory_ids), p=self.trajectory_sampling_weights[dataset_index]
+        )
+        trajectory_id = dataset.trajectory_ids[trajectory_index]
 
-        # # Sample step
-        # base_index = rng.choice(dataset.trajectory_lengths[trajectory_index])
-        # return dataset, trajectory_id, base_index
-        if len(dataset.all_steps) == 0:
-            raise ValueError(f"Dataset {dataset.dataset_name} has no steps.")
-
-        if not self._sequential_step_sampling:
-            single_step_index = rng.choice(len(dataset.all_steps))
-        else:
-            step_pos = self._step_pos[dataset_index]
-            if step_pos >= len(dataset.all_steps):
-                order = np.arange(len(dataset.all_steps))
-                if self.mode == "train":
-                    seed = safe_hash((self.epoch, dataset_index, self.seed, step_pos))
-                    rng = np.random.default_rng(seed)
-                    rng.shuffle(order)
-                self._step_order[dataset_index] = order
-                step_pos = 0
-
-            single_step_index = self._step_order[dataset_index][step_pos]
-            self._step_pos[dataset_index] = step_pos + 1
-        trajectory_id, base_index = dataset.all_steps[single_step_index]
+        # Sample step
+        base_index = rng.choice(dataset.trajectory_lengths[trajectory_index])
         return dataset, trajectory_id, base_index
 
-    _getitem_count = 0
+    
 
     def __getitem__(self, index: int) -> dict:
         """Get the data for a single trajectory and start index.
@@ -2299,8 +2319,8 @@ class LeRobotMixtureDataset(Dataset):
         Returns:
             dict: The data for the trajectory and start index.
         """
-        LeRobotMixtureDataset._getitem_count += 1
-        if LeRobotMixtureDataset._getitem_count % 1000 == 0:
+        self._getitem_count += 1
+        if self._getitem_count % 1000 == 0:
             gc.collect()
 
         max_retries = 10
@@ -2308,8 +2328,23 @@ class LeRobotMixtureDataset(Dataset):
 
         for attempt in range(max_retries):
             try:
-                while True: # @DUG
+                sample_tries = 0
+                max_sample_tries = 200
+                while True:
+                    sample_tries += 1
+                    if sample_tries > max_sample_tries:
+                        raise RuntimeError(
+                            f"Unable to sample a valid item after {max_sample_tries} attempts. "
+                            f"dataset={self.datasets[0].dataset_name if len(self.datasets)>0 else 'unknown'}"
+                        )
+
                     dataset, trajectory_id, step = self.sample_step(index)
+                    # If dataset has no physical videos (e.g., image frames in parquet
+                    # for VLA-Arena), do not gate sampling on mp4 existence.
+                    total_videos = int(dataset.lerobot_info_meta.get("total_videos", 0))
+                    if total_videos == 0:
+                        break
+
                     key = dataset.modality_keys["video"][0].replace("video.", "")
                     video_path = dataset.get_video_path(trajectory_id, key)
                     if os.path.exists(video_path):
@@ -2319,7 +2354,7 @@ class LeRobotMixtureDataset(Dataset):
                 raw_data = dataset.get_step_data(trajectory_id, step)    
                 data = dataset.transforms(raw_data)
                 sample = dataset._pack_sample(data)
-                sample["robot_tag"] = dataset.tag
+                
                 return sample
                 
             except Exception as e:

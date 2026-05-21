@@ -1,5 +1,5 @@
 # Copyright 2025 CogACT. All rights reserved.
-# Modified by [Jinhui YE/ HKUST University] in [2025]. 
+# Modified by [Jinhui YE/ HKUST University] in [2025].
 # Modification: [add global config ].
 """
 Diffusion-based action prediction head (DiT variant).
@@ -9,12 +9,13 @@ Provides:
   - ActionModel: wraps diffusion process (training + optional DDIM sampling creation)
 """
 
-from starVLA.model.modules.action_model.DiT_modules.models import DiT
-from starVLA.model.modules.action_model import create_diffusion
-from .DiT_modules import gaussian_diffusion as gd
-
 import torch
 from torch import nn
+
+from starVLA.model.modules.action_model import create_diffusion
+from starVLA.model.modules.action_model.DiT_modules.models import DiT
+
+from .DiT_modules import gaussian_diffusion as gd
 
 
 # Create model sizes of ActionModels
@@ -209,8 +210,12 @@ def get_action_model(model_typ="DiT-B", config=None):
     model_type = action_model_cfg.action_model_type
     action_hidden_dim = action_model_cfg.action_hidden_dim
     action_dim = action_model_cfg.action_dim
-    future_action_window_size = action_model_cfg.future_action_window_size
-    past_action_window_size = action_model_cfg.past_action_window_size
+    # `action_horizon` is the canonical chunk length, normalised upstream by
+    # share_tools.apply_config_compat.  The inner DiT API still takes the
+    # legacy (past, future) split; we derive it locally with past=0.
+    action_horizon = int(action_model_cfg.action_horizon)
+    past_action_window_size = 0
+    future_action_window_size = action_horizon - 1
 
     return ActionModel(
         model_type=model_type,  # Model type, e.g., 'DiT-B'

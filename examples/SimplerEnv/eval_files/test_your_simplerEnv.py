@@ -1,16 +1,19 @@
-
 # Optional: print more diagnostics for debugging
 # from sapien import disable_renderer
 # disable_renderer()  # <-- Uncomment to skip the renderer
 
 
-
-from simpler_env.utils.env.env_builder import build_maniskill2_env, get_robot_control_mode
-from simpler_env.utils.env.observation_utils import get_image_from_maniskill2_obs_dict
-from simpler_env.utils.visualization import write_video
 import logging
+import os
+
+import simpler_env
+from simpler_env.utils.env.env_builder import build_maniskill2_env
 
 logging.basicConfig(level=logging.DEBUG)
+
+# Resolve rgb_overlay_path relative to the SimplerEnv package location
+_simpler_env_root = os.path.dirname(os.path.dirname(simpler_env.__file__))
+_overlay_path = os.path.join(_simpler_env_root, "ManiSkill2_real2sim/data/real_inpainting/bridge_sink.png")
 
 env_name = "PutEggplantInBasketScene-v0"
 
@@ -23,7 +26,7 @@ kwargs = {
     "max_episode_steps": 120,
     "scene_name": "bridge_table_1_v2",
     "camera_cfgs": {"add_segmentation": True},
-    "rgb_overlay_path": "ManiSkill2_real2sim/data/real_inpainting/bridge_sink.png"
+    "rgb_overlay_path": _overlay_path,
 }
 
 additional_env_build_kwargs = {}
