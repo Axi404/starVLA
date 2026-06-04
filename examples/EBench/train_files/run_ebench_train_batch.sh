@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=ebench_baseline
-#SBATCH -p ebench_t
+#SBATCH -p eailab_bench
 #SBATCH -N 6
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=128
 #SBATCH --gres=gpu:8
 #SBATCH --output=/mnt/petrelfs/gaoning/trash/%x-%j.out
 #SBATCH --error=/mnt/petrelfs/gaoning/trash/%x-%j.err
-#SBATCH --exclude=HOST-10-140-66-29,HOST-10-140-66-108
+#SBATCH --exclude=HOST-10-140-66-29,HOST-10-140-66-108,HOST-10-140-60-30,HOST-10-140-60-125,HOST-10-140-60-45
 
 set -e
 
@@ -27,6 +27,8 @@ export TOTAL_GPUS=$((GPUS_PER_NODE * SLURM_NNODES))
 export MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)
 export MASTER_PORT=$((20000 + RANDOM % 10000))
 
+export PYTHONDONTWRITEBYTECODE=1
+
 echo "SLURM_NNODES=$SLURM_NNODES  GPUS_PER_NODE=$GPUS_PER_NODE  TOTAL_GPUS=$TOTAL_GPUS"
 echo "MASTER_ADDR=$MASTER_ADDR  MASTER_PORT=$MASTER_PORT"
 
@@ -37,11 +39,25 @@ base_vlm=playground/Pretrained_models/Qwen3-VL-4B-Instruct
 config_yaml=./examples/EBench/train_files/starvla_cotrain_ebench_abs.yaml
 run_root_dir=./results/Checkpoints
 data_mix=ebench_generalist
-run_id=0330_${data_mix}_abs_Qwen3OFT_50
+run_id=0516_${data_mix}_abs_Qwen3OFT_50
+
+export HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
+if [[ -n "${HF_TOKEN:-}" ]]; then
+  export HF_TOKEN
+fi
 
 output_dir=${run_root_dir}/${run_id}
 mkdir -p "${output_dir}"
 cp "$0" "${output_dir}/"
+
+# ===== Proxy (for wandb / huggingface / pip etc.) =====
+AD_URL=${AD_URL:-10.1.20.50:23128}
+if [[ -n "${AD_USER:-}" && -n "${AD_PASSWORD:-}" && -n "${AD_URL:-}" ]]; then
+  export http_proxy="http://${AD_USER}:${AD_PASSWORD}@${AD_URL}/"
+  export https_proxy="http://${AD_USER}:${AD_PASSWORD}@${AD_URL}/"
+  export HTTP_PROXY="$http_proxy"
+  export HTTPS_PROXY="$https_proxy"
+fi
 
 source /mnt/petrelfs/gaoning/miniconda3/bin/activate
 conda activate starvla
@@ -82,12 +98,12 @@ srun --jobid "$SLURM_JOBID" bash -c '
     --config_yaml '"$config_yaml"' \
     --framework.name '"$Framework_name"' \
     --framework.qwenvl.base_vlm '"$base_vlm"' \
-    --datasets.vla_data.per_device_batch_size 4 \
+    --datasets.vla_data.per_device_batch_size 8 \
     --datasets.vla_data.action_type abs_qpos \
     --datasets.vla_data.action_mode abs \
     --datasets.vla_data.data_mix '"$data_mix"' \
     --trainer.freeze_modules '"$freeze_module_list"' \
-    --trainer.max_train_steps 150000 \
+    --trainer.max_train_steps 200000 \
     --trainer.save_interval 10000 \
     --trainer.logging_frequency 50 \
     --trainer.eval_interval 1000 \
