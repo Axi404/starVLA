@@ -351,6 +351,50 @@ class PolicyNormProcessor:
         return self._transform
 
     # ------------------------------------------------------------------
+    # Forward path (env state -> model input)
+    # ------------------------------------------------------------------
+    def apply_state(self, state: np.ndarray) -> np.ndarray:
+        """Apply state normalization using the training-time pipeline.
+
+        Args:
+            state: shape ``(D,)`` or ``(T, D)`` where
+                ``D == sum(state_key_dims.values())``.
+
+        Returns:
+            ``(T, D)`` normalized state in the same concatenation order as
+            ``data_config.state_keys``.
+        """
+        state = np.asarray(state, dtype=np.float32)
+        if state.ndim == 1:
+            state = state[None, :]
+        assert state.ndim == 2, f"Expected (D,) or (T, D); got shape {state.shape}"
+
+        data: Dict[str, np.ndarray] = {}
+        cursor = 0
+        for full_key in self._state_keys:
+            dim_k = self._state_key_dims.get(full_key, 1)
+            data[full_key] = state[..., cursor : cursor + dim_k]
+            cursor += dim_k
+
+        if cursor != state.shape[-1]:
+            raise ValueError(
+                f"Sum of per-key dims ({cursor}) != state_dim "
+                f"({state.shape[-1]}). "
+                f"state_keys={self._state_keys}, "
+                f"state_key_dims={self._state_key_dims}"
+            )
+
+        out = self._transform.apply(data)
+
+        parts: List[np.ndarray] = []
+        for full_key in self._state_keys:
+            v = out[full_key]
+            if isinstance(v, torch.Tensor):
+                v = v.detach().cpu().numpy()
+            parts.append(np.asarray(v))
+        return np.concatenate(parts, axis=-1).astype(np.float32)
+
+    # ------------------------------------------------------------------
     # Inverse path (model output → env action)
     # ------------------------------------------------------------------
     def unapply_actions(self, normalized_actions: np.ndarray) -> np.ndarray:

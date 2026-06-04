@@ -10,8 +10,8 @@ it via `genmanip_client.EvalClient`. StarVLA stays a websocket server.
 Neither side can drive the other directly, so this script is the missing
 driver — a pure client to both. Per step:
 
-  EBench server  ──obs──▶  bridge  ──(image, lang, [state])──▶  StarVLA server
-  StarVLA server ──normalized_actions──▶  bridge  ──action chunk──▶  EBench server
+  EBench server  ──obs──▶  bridge  ──(image, lang, state?)──▶  StarVLA server
+  StarVLA server ──unnormalized actions──▶  bridge  ──action──▶  EBench server
 
 See examples/EBench/eval_files/README.md for usage.
 """
@@ -33,6 +33,22 @@ from starVLA.model.tools import read_mode_config
 
 
 logger = logging.getLogger("ebench_bridge")
+
+
+DEFAULT_EBENCH_STATE_LAYOUT: Dict[str, Dict[str, Any]] = {
+    "left_joints": {"key": "state.joints", "slice": [0, 6]},
+    "right_joints": {"key": "state.joints", "slice": [6, 12]},
+    "left_gripper": {"key": "state.gripper", "slice": [0, 2]},
+    "right_gripper": {"key": "state.gripper", "slice": [2, 4]},
+    "base": {"key": "state.base", "slice": [0, 3]},
+}
+DEFAULT_EBENCH_STATE_ORDER: List[str] = [
+    "left_joints",
+    "right_joints",
+    "left_gripper",
+    "right_gripper",
+    "base",
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -72,67 +88,22 @@ def _describe(obj: Any, name: str = "obj", indent: int = 0, max_depth: int = 6) 
 
 
 # --------------------------------------------------------------------------- #
-# norm stats helpers
+# checkpoint helpers
 # --------------------------------------------------------------------------- #
-def _load_action_norm_stats(policy_ckpt_path: str, unnorm_key: str) -> Dict[str, np.ndarray]:
-    """Load the flat (action_dim,) min/max/mask from dataset_statistics.json.
-
-    gr00t_lerobot concatenates action_keys in the order declared on the data
-    config (see EBenchConfig) and saves a single combined action stats block
-    under `{unnorm_key}.action`. We therefore expect a flat layout matching
-    the 19-dim order: left_joints, right_joints, left_gripper, right_gripper,
-    base_delta.
-    """
-    _, norm_stats = read_mode_config(Path(policy_ckpt_path))
-    if unnorm_key not in norm_stats:
-        raise KeyError(
-            f"unnorm_key='{unnorm_key}' not in dataset_statistics.json. "
-            f"Available: {sorted(norm_stats.keys())}"
-        )
-    block = norm_stats[unnorm_key]
-    # Two possible shapes: {"action": {...}} or {"abs": {"action": {...}}}
-    if "action" in block:
-        stats = block["action"]
-    elif "abs" in block and "action" in block["abs"]:
-        stats = block["abs"]["action"]
-    else:
-        raise KeyError(
-            f"No flat 'action' stats under '{unnorm_key}'. Got keys: {sorted(block.keys())}"
-        )
-    out = {
-        "min": np.asarray(stats["min"], dtype=np.float32),
-        "max": np.asarray(stats["max"], dtype=np.float32),
-    }
-    if "mask" in stats:
-        out["mask"] = np.asarray(stats["mask"], dtype=bool)
-    else:
-        out["mask"] = np.ones_like(out["min"], dtype=bool)
-    return out
-
-
-def _unnormalize(
-    normalized: np.ndarray,
-    stats: Dict[str, np.ndarray],
-    mode: str = "min_max",
-) -> np.ndarray:
-    """Flat-vector unnormalize. Dims with mask=False pass through unchanged
-    (this is how `binary` gripper dims survive: the model already emits 0/1)."""
-    if mode == "min_max":
-        low, high = stats["min"], stats["max"]
-    elif mode == "q99":
-        if "q01" not in stats or "q99" not in stats:
-            raise KeyError("q99 mode requires 'q01' and 'q99' in stats")
-        low, high = stats["q01"], stats["q99"]
-    else:
-        raise ValueError(f"unsupported normalization mode: {mode}")
-    clipped = np.clip(normalized, -1.0, 1.0)
-    unnorm = 0.5 * (clipped + 1.0) * (high - low) + low
-    return np.where(stats["mask"], unnorm, normalized)
-
-
+# Note: PolicyServerWrapper now owns un-normalization (see deployment/model_server/
+# policy_wrapper.py:predict_action). The client only needs to read chunk size for
+# logging — the action vector returned from the server is already in env units.
 def _get_action_chunk_size(policy_ckpt_path: str) -> int:
     cfg, _ = read_mode_config(Path(policy_ckpt_path))
-    return cfg["framework"]["action_model"]["future_action_window_size"] + 1
+    action_model_cfg = cfg["framework"]["action_model"]
+    if "action_horizon" in action_model_cfg:
+        return int(action_model_cfg["action_horizon"])
+    if "future_action_window_size" in action_model_cfg:
+        return int(action_model_cfg["future_action_window_size"]) + 1
+    raise KeyError(
+        "checkpoint config is missing framework.action_model.action_horizon "
+        "or future_action_window_size"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -152,28 +123,38 @@ class EBenchBridge:
         self._assert_camera_order_matches_training(self.camera_keys)
         self.image_size = tuple(cfg.get("image_size", [224, 224]))
 
+        self.include_state: bool = bool(cfg.get("include_state", False))
+        self.state_layout: Dict[str, Dict[str, Any]] = cfg.get(
+            "state_layout", DEFAULT_EBENCH_STATE_LAYOUT
+        )
+        self.state_order: List[str] = list(
+            cfg.get("state_order", DEFAULT_EBENCH_STATE_ORDER)
+        )
+
         self.layout: Dict[str, List[int]] = cfg["action_layout"]
         self.control_type: str = cfg["control_type"]
         self.is_rel: bool = cfg["is_rel"]
 
         self.chunk_mode: bool = cfg.get("chunk_mode", True)
         self.max_chunk_len: Optional[int] = cfg.get("max_chunk_len")
+        # How many predicted actions to consume per inference. None = 1 in
+        # single-step mode, = full chunk in chunk mode. Setting an explicit
+        # int N means: re-infer every N actions, regardless of chunk_mode.
+        self.actions_per_inference: Optional[int] = cfg.get("actions_per_inference")
         self.log_every: int = cfg.get("log_every", 10)
-        self.norm_mode: str = cfg.get("action_normalization_mode", "min_max")
         self.debug: bool = cfg.get("debug", True)
         self.max_steps: Optional[int] = cfg.get("max_steps")
+        self.unnorm_key: Optional[str] = cfg.get("unnorm_key")
 
         # --- StarVLA client ---
         self.policy = WebsocketClientPolicy(
             host=cfg["policy_host"], port=cfg["policy_port"]
         )
         ckpt_path = cfg["policy_ckpt_path"]
-        self.action_norm_stats = _load_action_norm_stats(ckpt_path, cfg["unnorm_key"])
         self.model_chunk_len = _get_action_chunk_size(ckpt_path)
         logger.info(
-            "connected to StarVLA %s:%s (chunk=%d, action_dim=%d)",
-            cfg["policy_host"], cfg["policy_port"],
-            self.model_chunk_len, len(self.action_norm_stats["min"]),
+            "connected to StarVLA %s:%s (chunk=%d)",
+            cfg["policy_host"], cfg["policy_port"], self.model_chunk_len,
         )
 
         # --- EBench client ---
@@ -182,6 +163,8 @@ class EBenchBridge:
             base_url=cfg["ebench_base_url"],
             worker_ids=[cfg["ebench_worker_id"]],
             run_id=cfg["ebench_run_id"],
+            save_process=cfg.get("save_process", False),
+            save_result=cfg.get("save_result", True),
         )
         self.worker_id = cfg["ebench_worker_id"]
         logger.info(
@@ -210,11 +193,41 @@ class EBenchBridge:
                 raise ValueError(
                     "camera_keys order breaks training convention: a primary "
                     "(non-wrist) camera appears after a wrist camera. "
-                    f"Got: {keys}. Put prim views (e.g. top_camera_view) first."
+                    f"Got: {keys}. Put the prim/overhead view first."
                 )
 
     def _resize(self, img: np.ndarray) -> np.ndarray:
         return cv.resize(img, self.image_size, interpolation=cv.INTER_AREA)
+
+    def _state_part(self, worker_obs: Dict[str, Any], name: str) -> np.ndarray:
+        if name not in self.state_layout:
+            raise KeyError(
+                f"state part {name!r} missing from state_layout. "
+                f"Available parts: {list(self.state_layout)}"
+            )
+        spec = self.state_layout[name]
+        key = spec["key"]
+        if key not in worker_obs:
+            raise KeyError(
+                f"state key {key!r} missing from EBench obs for part {name!r}. "
+                f"Available state keys: {[k for k in worker_obs if k.startswith('state.')]}"
+            )
+
+        arr = np.asarray(worker_obs[key], dtype=np.float32).reshape(-1)
+        a, b = spec.get("slice", [0, arr.shape[0]])
+        part = arr[a:b]
+        expected = b - a
+        if part.shape[0] != expected:
+            raise ValueError(
+                f"state part {name!r} from {key!r}[{a}:{b}] has "
+                f"{part.shape[0]} dims, expected {expected}; source shape={arr.shape}"
+            )
+        return part
+
+    def _obs_to_state(self, worker_obs: Dict[str, Any]) -> np.ndarray:
+        parts = [self._state_part(worker_obs, name) for name in self.state_order]
+        state = np.concatenate(parts, axis=0).astype(np.float32)
+        return state[None, :]  # training examples carry state as [T=1, D]
 
     def _obs_to_example(self, worker_obs: Dict[str, Any]) -> Dict[str, Any]:
         images = []
@@ -231,26 +244,30 @@ class EBenchBridge:
             logger.info("instruction: %r", instruction)
             self._last_instruction = instruction
 
-        return {"lang": str(instruction), "image": images}
+        example = {"lang": str(instruction), "image": images}
+        if self.include_state:
+            example["state"] = self._obs_to_state(worker_obs)
+        return example
 
     # ------------------------------------------------------------------ #
     # StarVLA call
     # ------------------------------------------------------------------ #
     def _predict_chunk(self, example: Dict[str, Any]) -> np.ndarray:
-        resp = self.policy.predict_action(
-            {"examples": [example], "do_sample": False}
-        )
+        payload: Dict[str, Any] = {"examples": [example], "do_sample": False}
+        if self.unnorm_key is not None:
+            payload["unnorm_key"] = self.unnorm_key
+        resp = self.policy.predict_action(payload)
         data = resp.get("data", resp)
-        if "normalized_actions" not in data:
+        if "actions" not in data:
             raise KeyError(
-                f"policy response missing 'normalized_actions'; keys={list(data.keys())}"
+                f"policy response missing 'actions'; keys={list(data.keys())}"
             )
-        normalized = np.asarray(data["normalized_actions"])
-        if normalized.ndim == 3:
-            normalized = normalized[0]           # [B=1, T, D] -> [T, D]
-        elif normalized.ndim == 1:
-            normalized = normalized[None, :]     # [D] -> [1, D]
-        return _unnormalize(normalized, self.action_norm_stats, self.norm_mode)
+        actions = np.asarray(data["actions"])
+        if actions.ndim == 3:
+            actions = actions[0]           # [B=1, T, D] -> [T, D]
+        elif actions.ndim == 1:
+            actions = actions[None, :]     # [D] -> [1, D]
+        return actions
 
     # ------------------------------------------------------------------ #
     # action chunk → EBench action dict(s)
@@ -282,7 +299,11 @@ class EBenchBridge:
     # ------------------------------------------------------------------ #
     # main loop
     # ------------------------------------------------------------------ #
-    def _one_inference(self, obs: Dict[str, Any]):
+    def _one_inference(self, obs: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Run the policy on the current obs and return the full list of
+        EBench-formatted action dicts for this chunk. The caller decides how
+        many of them to submit, and via which EBench API (/step or /step_chunk).
+        """
         if self.worker_id not in obs:
             raise KeyError(
                 f"worker_id '{self.worker_id}' not in EBench obs; got {list(obs.keys())}"
@@ -306,7 +327,7 @@ class EBenchBridge:
         chunk = self._predict_chunk(example)
         if dump:
             logger.info(
-                "=== [debug] StarVLA → bridge: unnormalized chunk ===\n%s",
+                "=== [debug] StarVLA → bridge: action chunk (server-unnormalized) ===\n%s",
                 _describe(chunk, "chunk"),
             )
             for slice_name, (a, b) in self.layout.items():
@@ -316,23 +337,52 @@ class EBenchBridge:
                     slice_name, a, b, s.min(), s.max(), s.mean(),
                 )
         actions = self._chunk_to_ebench(chunk)
-        payload = {self.worker_id: actions if self.chunk_mode else actions[0]}
-        n_actions = len(actions) if self.chunk_mode else 1
         elapsed = time.time() - t0
-
-        if dump:
-            logger.info(
-                "=== [debug] bridge → EBench: payload ===\n%s",
-                _describe(payload, "payload"),
-            )
-
         self._step_counter += 1
         if self._step_counter % self.log_every == 0 or dump:
+            # Surface base_delta range on every inference — the bridge has no
+            # action cache, so any inter-chunk lurch in base motion shows up
+            # as a discontinuity here vs the previous inference's last frame.
+            a, b = self.layout["base_delta"]
+            bd = chunk[:, a:b]
             logger.info(
-                "step %d: %d actions, inference=%.3fs",
-                self._step_counter, n_actions, elapsed,
+                "inference %d: chunk_len=%d, inference=%.3fs, "
+                "base_delta first=%s last=%s max_abs=%.4f",
+                self._step_counter, len(actions), elapsed,
+                np.array2string(bd[0], precision=4, suppress_small=True),
+                np.array2string(bd[-1], precision=4, suppress_small=True),
+                float(np.abs(bd).max()),
             )
-        return payload
+        return actions
+
+    def _actions_per_inference(self, chunk_len: int) -> int:
+        """Resolve how many predicted actions to consume before re-inferring.
+
+        - explicit `actions_per_inference` config wins
+        - else chunk_mode=True  → full chunk (capped by max_chunk_len)
+        - else chunk_mode=False → 1 (re-infer every sim step)
+        """
+        if self.actions_per_inference is not None:
+            return min(self.actions_per_inference, chunk_len)
+        if self.chunk_mode:
+            return chunk_len  # already capped by _chunk_to_ebench via max_chunk_len
+        return 1
+
+    def _episode_was_reset(self, obs: Dict[str, Any]) -> bool:
+        """True iff the worker's obs carries the per-episode `reset=True` flag
+        (EBench sets this on the first obs of a freshly-reset episode, e.g. after
+        invalid_state termination or a successful completion). When this fires
+        mid-chunk, any remaining actions in our predicted chunk were planned for
+        the previous episode's trajectory and would be meaningless — and harmful
+        — when applied to the new episode's initial state. The run loop must
+        break out of the inner action-submission loop and re-infer."""
+        worker = obs.get(self.worker_id)
+        if not isinstance(worker, dict):
+            return False
+        wobs = worker.get("obs")
+        if not isinstance(wobs, dict):
+            return False
+        return bool(wobs.get("reset"))
 
     def run(self) -> None:
         try:
@@ -340,9 +390,44 @@ class EBenchBridge:
             if isinstance(obs, tuple):
                 obs = obs[0]
             done = False
+            dump_payload = self.debug
             while not done:
-                action = self._one_inference(obs)
-                obs, done = self.eval_client.step(action)
+                actions = self._one_inference(obs)
+                n = self._actions_per_inference(len(actions))
+                actions = actions[:n]
+
+                if self.chunk_mode:
+                    payload = {self.worker_id: actions}
+                    if dump_payload:
+                        logger.info(
+                            "=== [debug] bridge → EBench: chunk payload ===\n%s",
+                            _describe(payload, "payload"),
+                        )
+                        dump_payload = False
+                    obs, done = self.eval_client.step(payload)
+                else:
+                    # Open-loop: submit each predicted action one by one via /step.
+                    for i, a in enumerate(actions):
+                        payload = {self.worker_id: a}
+                        if dump_payload:
+                            logger.info(
+                                "=== [debug] bridge → EBench: single payload (1/%d) ===\n%s",
+                                n, _describe(payload, "payload"),
+                            )
+                            dump_payload = False
+                        obs, done = self.eval_client.step(payload)
+                        if done:
+                            break
+                        if self._episode_was_reset(obs):
+                            logger.info(
+                                "episode reset detected mid-chunk after %d/%d action(s); "
+                                "discarding remaining %d stale predictions and re-inferring",
+                                i + 1, n, n - i - 1,
+                            )
+                            break
+                        if self.max_steps is not None and self._step_counter >= self.max_steps:
+                            break
+
                 if self.max_steps is not None and self._step_counter >= self.max_steps:
                     logger.info("max_steps=%d reached, stopping", self.max_steps)
                     break

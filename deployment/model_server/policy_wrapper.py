@@ -15,8 +15,8 @@ Client-side responsibilities that REMAIN on the client:
 Exposed API:
   - ``metadata`` (dict, sent at handshake): ``action_chunk_size``,
     ``available_unnorm_keys``, ``action_keys``, ``state_keys``.
-  - ``predict_action(examples, unnorm_key=None, **kwargs)`` returns
-    ``{"actions": np.ndarray[B, T, action_dim]}``.
+  - ``predict_action(examples, unnorm_key=None, **kwargs)`` normalizes optional
+    raw ``example["state"]`` and returns ``{"actions": np.ndarray[B, T, action_dim]}``.
 """
 
 from __future__ import annotations
@@ -106,6 +106,23 @@ class PolicyServerWrapper:
             )
         return self._norm_processors[cache_key]
 
+    @staticmethod
+    def _normalize_example_states(
+        examples: List[dict],
+        proc: PolicyNormProcessor,
+    ) -> List[dict]:
+        normalized_examples: List[dict] = []
+        for example in examples:
+            if "state" not in example or example["state"] is None:
+                normalized_examples.append(example)
+                continue
+            normalized_example = dict(example)
+            normalized_example["state"] = proc.apply_state(
+                np.asarray(example["state"], dtype=np.float32)
+            )
+            normalized_examples.append(normalized_example)
+        return normalized_examples
+
     @property
     def metadata(self) -> Dict[str, Any]:
         """Model-invariant metadata; sent to client at websocket handshake."""
@@ -152,6 +169,7 @@ class PolicyServerWrapper:
                 )
         proc = self._get_processor(effective_key)
 
+        examples = self._normalize_example_states(examples, proc)
         out = self._framework.predict_action(examples=examples, **kwargs)
         normalized = np.asarray(out["normalized_actions"])  # (B, T, D)
 

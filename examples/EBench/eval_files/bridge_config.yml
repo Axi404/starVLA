@@ -5,30 +5,49 @@
 # ---- StarVLA policy server (same machine by default) ----
 policy_host: "127.0.0.1"
 policy_port: 5694
-policy_ckpt_path: "/path/to/results/Checkpoints/ebench/QwenOFT-ebench/checkpoints/steps_XXXXX_pytorch_model.pt"
+policy_ckpt_path: "results/Checkpoints/QwenOFT-all-200k-50chunk-ebench-512-over-2B-state/checkpoints/steps_200000_pytorch_model.pt"
 unnorm_key: "new_embodiment"
-# action_normalization_mode: how the non-binary dims of the action were normalized during training.
-#   EBench training uses "min_max" for joints/base and "binary" for gripper (pass-through).
-action_normalization_mode: "min_max"
 
 # ---- EBench evaluation server ----
 ebench_base_url: "http://127.0.0.1:8087"
 ebench_worker_id: "0"
-ebench_run_id: "starvla_ebench_eval"
+ebench_run_id: "starvla_ebench"
+# Save client-side intermediate process artifacts through genmanip_client.
+save_process: true
+save_result: true
 
 # ---- cameras ----
-# EBench eval-time obs key → training obs key (see EBenchConfig.video_keys):
-#   video.top_camera_view    → cam_high
-#   video.left_camera_view   → cam_left_wrist
-#   video.right_camera_view  → cam_right_wrist
-# (The 4th eval camera `video.overlook_camera_view` is unused.)
-# This matches the canonical InternVLA EBench client:
-#   InternVLA/tutorials/examples/evaluation/EBench/pi05_client.py
-# Order here = order fed into StarVLA; keep it [high, left_wrist, right_wrist].
+# Order here is fed positionally into StarVLA, matching EBenchConfig.video_keys
+# in examples/EBench/train_files/data_registry/data_config.py:
+#   slot 0 (prim/overhead): training key depends on the ckpt family
+#                             *-over*  → video.cam_over       (overlook camera)
+#                             older    → video.cam_high       (top_camera)
+#   slot 1 (left wrist):    video.cam_left_wrist   ← video.left_camera_view
+#   slot 2 (right wrist):   video.cam_right_wrist  ← video.right_camera_view
+# Keep prim views before wrist views (see _assert_camera_order_matches_training).
 camera_keys:
-  - "video.top_camera_view"
+  - "video.overlook_camera_view"  # for older -128 ckpt swap to video.top_camera_view
   - "video.left_camera_view"
   - "video.right_camera_view"
+
+# ---- state layout ----
+# Set false for checkpoints trained without datasets.vla_data.include_state.
+# When true, bridge.py packs raw EBench obs into the training state order:
+# [state.left_joints, state.right_joints, state.left_gripper, state.right_gripper, state.base].
+# The policy server normalizes this raw state with the checkpoint's training transform.
+include_state: true
+state_order:
+  - "left_joints"
+  - "right_joints"
+  - "left_gripper"
+  - "right_gripper"
+  - "base"
+state_layout:
+  left_joints:   {key: "state.joints",  slice: [0, 6]}
+  right_joints:  {key: "state.joints",  slice: [6, 12]}
+  left_gripper:  {key: "state.gripper", slice: [0, 2]}
+  right_gripper: {key: "state.gripper", slice: [2, 4]}
+  base:          {key: "state.base",    slice: [0, 3]}
 
 # ---- action layout ----
 # Slices inside the model's (action_dim=19) output, following EBenchConfig action_keys order.
@@ -44,11 +63,18 @@ control_type: "joint_position"   # "joint_position" or "ee_pose"; we train on jo
 is_rel: false                    # false = arm action is absolute joint target
 
 # ---- chunk mode ----
-# If true, submit the entire predicted chunk in one EvalClient.step(); EBench executes it internally.
-# If false, submit single actions (slower, but useful for debugging step-level transitions).
-chunk_mode: true
-# Override chunk length actually sent to EBench. Null = use whatever the model predicts (usually 50).
-max_chunk_len: null
+# Two independent knobs:
+#   chunk_mode             — HTTP route. true → one /step_chunk call advances
+#                            N sim steps; false → N separate /step calls (one
+#                            obs + one client recording per sim step).
+#   actions_per_inference  — how many predicted actions to consume before
+#                            re-inferring. null = natural default (full chunk
+#                            in chunk_mode, 1 otherwise). Set 50 with
+#                            chunk_mode=false for open-loop 50-step rollout
+#                            of one chunk over 50 separate /step calls.
+chunk_mode: false
+actions_per_inference: 50
+max_chunk_len: null  # cap chunk_mode chunk length; null = whatever the model predicts
 
 # ---- misc ----
 image_size: [224, 224]
