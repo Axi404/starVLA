@@ -72,8 +72,8 @@ is_rel: false                    # false = arm action is absolute joint target
 #                            in chunk_mode, 1 otherwise). Set 50 with
 #                            chunk_mode=false for open-loop 50-step rollout
 #                            of one chunk over 50 separate /step calls.
-chunk_mode: false
-actions_per_inference: 50
+chunk_mode: true
+actions_per_inference: null
 max_chunk_len: null  # cap chunk_mode chunk length; null = whatever the model predicts
 
 # ---- misc ----

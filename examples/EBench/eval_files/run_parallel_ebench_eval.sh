@@ -198,8 +198,8 @@ action_layout:
 control_type: "joint_position"
 is_rel: false
 
-chunk_mode: false
-actions_per_inference: 50
+chunk_mode: true
+actions_per_inference: null
 max_chunk_len: null
 
 image_size: [224, 224]

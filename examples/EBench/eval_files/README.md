@@ -166,8 +166,9 @@ Notes:
 
 ## Configuration cheat-sheet
 
-- `chunk_mode: true` — submit all predicted actions in one `/step_chunk` call
-  (EBench advances N sim steps internally). Recommended for throughput.
+- `chunk_mode: true` — default; submit all predicted actions in one
+  `/step_chunk` call (EBench advances N sim steps internally). Recommended for
+  throughput.
 - `chunk_mode: false` — submit each action via its own `/step` call; useful
   for finer debug visibility (one obs / one client-side recorded frame per
   sim step).
